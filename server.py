@@ -83,6 +83,8 @@ ALLOWED_EXTENSIONS = {'bag', 'db3', 'mcap'}
 MAP_DIR = os.path.join(HOKUYO_NAV2_PKG_PATH, 'map')
 WP_DIR = os.path.join(HOKUYO_NAV2_PKG_PATH, 'waypoints')
 CONFIG_DIR = os.path.join(HOKUYO_NAV2_PKG_PATH, 'config')
+# マップごとの付随データ置き場。自己位置推定の初期位置 (init_pose.txt) はここにある。
+DATA_DIR = os.path.join(HOKUYO_NAV2_PKG_PATH, 'data')
 # マッピングやPCD変換は別ターミナルで動くため、実行ログをここに書き出して
 # ブラウザから読めるようにする。
 LOG_DIR = os.path.join(HOKUYO_NAV2_PKG_PATH, 'log', 'gui')
@@ -1173,6 +1175,161 @@ def serve_map_file(filename):
         print(f"ERROR: ファイルの提供に失敗しました ({filename}): {e}")
         return jsonify({'error': 'ファイルが見つからないか、アクセスできません'}), 404
         
+# 自己位置推定 (simple_fastlio_localization) の初期位置ファイルの既定値。
+# scripts/navigation/nav_common.sh の load_initial_poses が
+# data/<マップ名>/init_pose.txt の最終行を "x,y,z,qx,qy,qz,qw" として読む。
+DEFAULT_INITIAL_POSE = [0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 1.0]
+
+
+def _initial_pose_path(map_name):
+    """マップ名から init_pose.txt のパスを返す。不正なマップ名なら None。"""
+    if not map_name or os.path.basename(map_name) != map_name:
+        return None
+    pose_path = os.path.join(DATA_DIR, map_name, 'init_pose.txt')
+    if not _is_safe_path(pose_path, DATA_DIR):
+        return None
+    return pose_path
+
+
+@app.route('/initial_pose/<map_name>', methods=['GET'])
+def get_initial_pose(map_name):
+    """自己位置推定の初期位置を返す (API)
+
+    ナビゲーション起動時は data/<マップ名>/init_pose.txt が使われるため、
+    3Dビューアではこのファイルを読み書きする。
+    """
+    pose_path = _initial_pose_path(map_name)
+    if pose_path is None:
+        return jsonify({'status': 'error', 'message': '不正なマップ名です。'}), 400
+
+    if not os.path.exists(pose_path):
+        return jsonify({'status': 'success', 'exists': False,
+                        'pose': DEFAULT_INITIAL_POSE,
+                        'message': '初期位置ファイルがまだありません。既定値を表示しています。'})
+
+    try:
+        with open(pose_path, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f if line.strip()]
+    except OSError as e:
+        return jsonify({'status': 'error', 'message': f'初期位置を読み込めません: {e}'}), 500
+
+    if not lines:
+        return jsonify({'status': 'success', 'exists': False,
+                        'pose': DEFAULT_INITIAL_POSE,
+                        'message': '初期位置ファイルが空です。既定値を表示しています。'})
+
+    # nav_common.sh と同じく最終行を使う。
+    try:
+        pose = [float(v) for v in lines[-1].split(',')]
+    except ValueError:
+        return jsonify({'status': 'error',
+                        'message': f'初期位置の書式が不正です: {lines[-1]}'}), 400
+
+    if len(pose) < 7:
+        pose = (pose + DEFAULT_INITIAL_POSE[len(pose):])[:7]
+
+    return jsonify({'status': 'success', 'exists': True, 'pose': pose[:7]})
+
+
+@app.route('/save_initial_pose', methods=['POST'])
+def save_initial_pose():
+    """3Dビューアで指定した初期位置を init_pose.txt に保存する (API)"""
+    data = request.get_json(silent=True) or {}
+    map_name = data.get('map_name', '')
+    pose = data.get('pose')
+
+    pose_path = _initial_pose_path(map_name)
+    if pose_path is None:
+        return jsonify({'status': 'error', 'message': '不正なマップ名です。'}), 400
+
+    if not isinstance(pose, list) or len(pose) != 7:
+        return jsonify({'status': 'error',
+                        'message': '初期位置は x,y,z,qx,qy,qz,qw の7要素で指定してください。'}), 400
+    try:
+        pose = [float(v) for v in pose]
+    except (TypeError, ValueError):
+        return jsonify({'status': 'error', 'message': '初期位置に数値以外が含まれています。'}), 400
+
+    try:
+        os.makedirs(os.path.dirname(pose_path), exist_ok=True)
+        with open(pose_path, 'w', encoding='utf-8') as f:
+            f.write(','.join(f'{v:.6f}' for v in pose) + '\n')
+    except OSError as e:
+        return jsonify({'status': 'error', 'message': f'初期位置を保存できません: {e}'}), 500
+
+    return jsonify({
+        'status': 'success',
+        'message': f'初期位置を保存しました: data/{map_name}/init_pose.txt',
+    })
+
+
+@app.route('/save_pgm', methods=['POST'])
+def save_pgm():
+    """3Dビューアで編集した2Dマップ (PGM) を保存する (API)
+
+    本文には編集後のグレースケール値をそのまま (1画素1バイト) 送る。
+    別名で保存する場合は、元のYAMLを引き継いだ .yaml も一緒に作る。
+    """
+    source_map = os.path.basename(request.args.get('source_map', '') or '')
+    save_as = os.path.basename(request.args.get('save_as', '') or source_map)
+    try:
+        width = int(request.args.get('width', 0))
+        height = int(request.args.get('height', 0))
+    except ValueError:
+        return jsonify({'status': 'error', 'message': '画像サイズが不正です。'}), 400
+
+    if not save_as:
+        return jsonify({'status': 'error', 'message': '保存するマップ名を入力してください。'}), 400
+    if save_as.lower().endswith('.pgm'):
+        save_as = save_as[:-4]
+    if not re.match(r'^[A-Za-z0-9_.-]{1,100}$', save_as):
+        return jsonify({'status': 'error',
+                        'message': 'マップ名に使えない文字が含まれています。'}), 400
+    if width <= 0 or height <= 0:
+        return jsonify({'status': 'error', 'message': '画像サイズが不正です。'}), 400
+
+    pixels = request.get_data()
+    if len(pixels) != width * height:
+        return jsonify({'status': 'error',
+                        'message': f'画像データの長さが合いません '
+                                   f'(期待 {width * height} バイト / 受信 {len(pixels)} バイト)。'}), 400
+
+    pgm_path = os.path.join(MAP_DIR, f'{save_as}.pgm')
+    yaml_path = os.path.join(MAP_DIR, f'{save_as}.yaml')
+    if not _is_safe_path(pgm_path, MAP_DIR) or not _is_safe_path(yaml_path, MAP_DIR):
+        return jsonify({'status': 'error', 'message': '保存先が不正です。'}), 400
+
+    try:
+        # P5 (バイナリ grayscale) 形式で書き出す。
+        header = f'P5\n{width} {height}\n255\n'.encode('ascii')
+        with open(pgm_path, 'wb') as f:
+            f.write(header)
+            f.write(pixels)
+    except OSError as e:
+        return jsonify({'status': 'error', 'message': f'PGMを保存できません: {e}'}), 500
+
+    # 別名保存のときは、元のYAML（解像度・原点）を引き継いだものを作る。
+    yaml_created = False
+    if source_map and save_as != source_map:
+        source_yaml = os.path.join(MAP_DIR, f'{source_map}.yaml')
+        if os.path.isfile(source_yaml):
+            try:
+                with open(source_yaml, 'r', encoding='utf-8') as f:
+                    map_info = yaml.safe_load(f) or {}
+                map_info['image'] = f'{save_as}.pgm'
+                with open(yaml_path, 'w', encoding='utf-8') as f:
+                    yaml.dump(map_info, f, default_flow_style=True)
+                yaml_created = True
+            except (OSError, yaml.YAMLError) as e:
+                return jsonify({'status': 'error',
+                                'message': f'PGMは保存しましたが、YAMLを作成できませんでした: {e}'}), 500
+
+    message = f'2Dマップを保存しました: {save_as}.pgm'
+    if yaml_created:
+        message += f' / {save_as}.yaml'
+    return jsonify({'status': 'success', 'message': message, 'map_name': save_as})
+
+
 @app.route('/save_waypoints', methods=['POST'])
 def save_waypoints():
     """

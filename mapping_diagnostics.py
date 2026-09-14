@@ -64,7 +64,7 @@ CONFIG_TEMPLATE_ROWS = [
     ('run_lio', 'true', 'true'),
     ('gnss_cov_thre', '0.1', '0.1'),
     ('imu_topic', '/imu/data', '/imu/data'),
-    ('slam_mode', 'p2o', 'p2o'),
+    ('slam_mode', 'gnss', 'gnss'),
     ('pc_save_distance', '1.0', '1.0'),
     ('wp_save_distance', '4.0', '4.0'),
     ('gnss_min_movement_thre', '4.0', '4.0'),
@@ -116,12 +116,14 @@ EXPECTED_TOPIC_TYPES = {
     'imu_topic': 'sensor_msgs/msg/Imu',
 }
 
-VALID_SLAM_MODES = ('gnss', 'p2o', 'gravity')
+VALID_SLAM_MODES = ('gnss', 'gravity', 'pseudo_z0')
 
 # モードごとに、そのマッピングで必ず使われるトピックオプション。
 REQUIRED_TOPICS = {
     'p2o': ['gnss_topic', 'pointcloud_topic', 'lio_topic'],
     'p2o_gravity': ['pointcloud_topic', 'lio_topic', 'imu_topic'],
+    # pseudo_z0 は GNSS が使えない環境向けで、GNSS トピックは読まない。
+    'p2o_pseudo_z0': ['pointcloud_topic', 'lio_topic'],
     'lio_raw': ['pointcloud_topic', 'lio_topic'],
 }
 
@@ -707,12 +709,14 @@ def diagnose(mode, config_path, bag_info, scripts_dir=None):
 
     if mode in ('p2o', 'lio_raw') and bag_info and has_config:
         required_key = mode
-        if mode == 'p2o' and slam_mode == 'gravity':
-            required_key = 'p2o_gravity'
+        if mode == 'p2o' and slam_mode in ('gravity', 'pseudo_z0'):
+            required_key = f'p2o_{slam_mode}'
         required = REQUIRED_TOPICS.get(required_key, [])
         # 必須ではないトピックも、設定されていれば併せて確認する。
+        # ただし pseudo_z0 は GNSS を読まないので、gnss_topic は照合しない。
+        unused = ('gnss_topic',) if required_key == 'p2o_pseudo_z0' else ()
         optional = [opt for opt in ('gnss_topic', 'pointcloud_topic', 'lio_topic', 'imu_topic')
-                    if opt not in required and values.get(opt)]
+                    if opt not in required and opt not in unused and values.get(opt)]
         for option in required:
             _check_topic_option(option, values.get(option, ''), bag_info, True, findings)
         for option in optional:

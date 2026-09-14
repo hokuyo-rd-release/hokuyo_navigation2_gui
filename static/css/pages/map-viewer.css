@@ -432,3 +432,44 @@
         overflow-y: auto;
     }
 }
+
+/* --------------------------------------------------------------------------
+   コントロールパネルの補助テキストと入力欄
+   (初期位置の指定・PGM編集パネルで使用)
+   -------------------------------------------------------------------------- */
+.hud-note {
+    color: var(--viewer-text-muted);
+    font-size: var(--fs-xs);
+    line-height: var(--line-height);
+}
+
+#controls .hud-note {
+    margin: 0;
+    white-space: normal;
+}
+
+#controls .hud-note code {
+    color: var(--viewer-text);
+    font-family: var(--font-mono);
+    word-break: break-all;
+}
+
+#controls input[type="number"],
+#controls select {
+    box-sizing: border-box;
+    width: 100%;
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--viewer-border);
+    border-radius: var(--radius-sm);
+    background-color: var(--viewer-control-bg);
+    color: var(--viewer-text);
+    font-size: var(--fs-sm);
+}
+
+/* ラベルと入力欄を縦に積む（横並びだと数値欄が潰れるため） */
+#controls label:has(input[type="number"]),
+#controls label:has(select) {
+    flex-direction: column;
+    align-items: stretch;
+    gap: 2px;
+}

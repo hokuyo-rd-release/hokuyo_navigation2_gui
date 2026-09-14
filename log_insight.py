@@ -95,7 +95,8 @@ LOG_RULES = [
         'error',
         'GNSSのデータが見つかりません',
         '設定したGNSSトピックが見つからないため、測位の品質を判定できませんでした。',
-        'パラメータ設定ファイルの gnss_topic を、ROS Bagに記録されているトピック名に直してください。',
+        'パラメータ設定ファイルの gnss_topic を、ROS Bagに記録されているトピック名に直してください。'
+        'GNSSが使えない環境で計測した場合は、slam_mode を pseudo_z0 にしてください。',
     ),
     (
         'pointcloud_dump_failed',
@@ -124,8 +125,17 @@ LOG_RULES = [
         'データ取得をやり直すか、gnss_cov_thre の値を見直してください。',
     ),
     (
+        'gnss_fix_rate_too_low',
+        re.compile(r'fix率が fix_rate \(.*\) を下回ったため'),
+        'error',
+        'GNSSの測位精度が低いため中止しました',
+        '衛星測位が安定していない区間が多く、GNSSで地図を補正できませんでした。',
+        'パラメータ設定ファイルの gnss_cov_thre を大きくするか、'
+        'slam_mode を pseudo_z0 にして高さを0として補正してください。',
+    ),
+    (
         'gnss_fix_rate_low',
-        re.compile(r'fix トピックの共分散のfix率が|Fix率が低いため'),
+        re.compile(r'fix トピックの共分散のfix率が'),
         'warning',
         'GNSSの測位精度が低い状態です',
         '衛星測位が安定していない区間が多いため、地図の精度が落ちる可能性があります。',

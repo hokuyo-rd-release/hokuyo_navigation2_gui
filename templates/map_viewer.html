@@ -135,6 +135,66 @@
                 <button id="add-waypoint-start-button">先頭に追加</button>
                 <button id="add-waypoint-after-button" disabled>選択中の後に追加</button>
                 <button id="save-waypoints-button">ウェイポイントを保存</button>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <legend>初期位置 (自己位置推定)</legend>
+            <div class="control-group">
+                <p class="hud-note">
+                    simple_fastlio_localization の初期位置です。保存すると
+                    <code>data/&lt;マップ名&gt;/init_pose.txt</code> に書き込まれ、自律走行の起動時に使われます。
+                </p>
+                <p class="hud-note">
+                    マーカー（マゼンタ色の矢印）をクリックすると選択でき、
+                    ウェイポイントと同じようにドラッグで移動、ギズモで向きを変更できます。
+                </p>
+                <button id="pick-initial-pose-button">マップ上でクリックして指定</button>
+                <label>X [m]: <input type="number" id="init-pose-x" step="0.1" value="0"></label>
+                <label>Y [m]: <input type="number" id="init-pose-y" step="0.1" value="0"></label>
+                <label>Yaw [deg]: <input type="number" id="init-pose-yaw" step="1" value="0"></label>
+                <button id="reload-initial-pose-button">保存済みを読み込み</button>
+                <button id="save-initial-pose-button">初期位置を保存</button>
+                <div id="init-pose-status" class="hud-note"></div>
+            </div>
+        </fieldset>
+
+        <fieldset id="pgm-edit-fieldset" hidden>
+            <legend>2Dマップ (PGM) 編集</legend>
+            <div class="control-group">
+                <label>編集ブラシ:
+                    <select id="pgm-brush-mode">
+                        <option value="none">なし (編集しない)</option>
+                        <option value="free">通行可にする (白)</option>
+                        <option value="occupied">障害物にする (黒)</option>
+                        <option value="unknown">未知に戻す (グレー)</option>
+                    </select>
+                </label>
+                <label>ブラシ半径 [m]:
+                    <input type="number" id="pgm-brush-radius" min="0.05" step="0.05" value="0.5">
+                </label>
+                <label>
+                    <input type="checkbox" id="pgm-follow-waypoints">
+                    ウェイポイント移動に追従して通行可にする
+                </label>
+                <label>マージン [m]:
+                    <input type="number" id="pgm-waypoint-margin" min="0.05" step="0.05" value="1.0">
+                </label>
+                <label>
+                    <input type="checkbox" id="pgm-show-carve-range" checked>
+                    通行可にする範囲を表示
+                </label>
+                <label>保存するマップ名:
+                    <input type="text" id="pgm-save-name" placeholder="マップ名">
+                </label>
+                <button id="save-pgm-button">2Dマップを保存</button>
+                <button id="reset-pgm-button">編集を破棄</button>
+                <div id="pgm-edit-status" class="hud-note"></div>
+            </div>
+        </fieldset>
+
+        <fieldset>
+            <div class="control-group">
                 <button id="close-viewer-button" onclick="window.close()">ビューワ終了</button>
             </div>
         </fieldset>
@@ -146,6 +206,7 @@
         import { TransformControls } from 'three/addons/controls/TransformControls.js';
         import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
         import { DragControls } from 'three/addons/controls/DragControls.js';
+        import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
 
         document.addEventListener('DOMContentLoaded', (event) => {
             const legendContainer = document.createElement('div');
@@ -193,8 +254,31 @@
             }
         });
 
+        // PGM のグレースケール値 (pcd2pgm_converter.py の出力と同じ規約)
+        const PGM_OCCUPIED = 0;    // 障害物 (黒)
+        const PGM_FREE = 254;      // 通行可 (白)
+        const PGM_UNKNOWN = 205;   // 未知 (グレー)
+
         let waypoints = []; 
         let mapData = null; 
+        // 2Dマップ(PGM)の編集状態。PGMをロードすると作られる。
+        let pgmEdit = null;
+        let isPaintingPgm = false;
+        // ウェイポイント追従で塗っている最中だけ、塗った画素を記録する単位名が入る
+        let activeCarveUnit = null;
+        let carveIdSeq = 0;
+        // 「どこが通行可になるか」を地図の上に重ねて見せるためのグループ
+        let carveRangeGroup = null;
+        // 自己位置推定の初期位置マーカーと、指定モードのフラグ
+        let initialPoseMarker = null;
+        let initialPoseZ = 0.0;
+        let isPickingInitialPose = false;
+        // 初期位置マーカーを選択中かどうか。ウェイポイントと同じ操作感にするため、
+        // 選択するとドラッグで移動、ギズモで向きの変更ができる。
+        let isInitialPoseSelected = false;
+        // マーカーのドラッグ直後に発生する click で選択が外れないようにするための目印。
+        // (Z座標を固定している都合でカーソルがマーカーから外れることがあるため)
+        let suppressNextClickAfterDrag = false;
         const meshRegistry = {}; 
         let currentMapName = '{{ map_name }}'; 
         let scene, camera, renderer, pcdLoader;
@@ -244,6 +328,28 @@
             }
         }
 
+        // PGMのグレースケール値 (0=障害物 / 254=通行可 / 205=未知) を表示色に変換する。
+        // 表示時とブラシ編集時で同じ色になるよう、変換はこの関数に集約する。
+        function writePGMTexel(data, offset, gray) {
+            if (gray === PGM_OCCUPIED) {
+                data[offset] = 255;
+                data[offset + 1] = 50;
+                data[offset + 2] = 50;
+                data[offset + 3] = 200; // A: 80% 不透明
+            } else if (gray === PGM_FREE) {
+                data[offset] = 150;
+                data[offset + 1] = 255;
+                data[offset + 2] = 150;
+                data[offset + 3] = 100; // A: 40% 不透明
+            } else {
+                // 未知 (205) やその他の値は透明にする
+                data[offset] = 0;
+                data[offset + 1] = 0;
+                data[offset + 2] = 0;
+                data[offset + 3] = 0;
+            }
+        }
+
         async function parsePGM(urlOrBuffer, mapData) {
             let buffer;
             if (typeof urlOrBuffer === 'string') {
@@ -290,36 +396,15 @@
             }
             const pixelDataStart = headerEndIndex;
             const pixelDataSize = width * height;
-            const grayData = new Uint8Array(buffer, pixelDataStart, pixelDataSize);
+            // 編集して保存し直せるように、グレースケール値のコピーを保持する。
+            // (元の値は fetch したバッファを参照しているだけなので複製しておく)
+            const grayData = new Uint8Array(
+                new Uint8Array(buffer, pixelDataStart, pixelDataSize));
             const data = new Uint8Array(pixelDataSize * 4);
-            const occupiedThresh = mapData.occupied_thresh || 0.65;
-            const freeThresh = mapData.free_thresh || 0.196;
             for (let i = 0; i < pixelDataSize; i++) {
-                const gray = grayData[i];
-                const offset = i * 4;
-                if (gray === 0) {
-                    data[offset] = 255;     // R
-                    data[offset + 1] = 50;  // G
-                    data[offset + 2] = 50;  // B
-                    data[offset + 3] = 200; // A: 80% 不透明
-                } else if (gray === 254) {
-                    data[offset] = 150;     // R
-                    data[offset + 1] = 255; // G
-                    data[offset + 2] = 150; // B
-                    data[offset + 3] = 100; // A: 40% 不透明
-                } else if (gray === 205) {
-                    data[offset] = 0;
-                    data[offset + 1] = 0;
-                    data[offset + 2] = 0;
-                    data[offset + 3] = 0; // A: 完全に透明
-                } else {
-                    data[offset] = 0;
-                    data[offset + 1] = 0;
-                    data[offset + 2] = 0;
-                    data[offset + 3] = 0;
-                }
+                writePGMTexel(data, i * 4, grayData[i]);
             }
-            return { data, width, height, maxValue };
+            return { data, gray: grayData, width, height, maxValue };
         }
         function createToggle(id, labelText, mesh) {
             const container = document.getElementById('dynamic-toggles');
@@ -399,6 +484,31 @@
                 scene.add(mesh);
                 meshRegistry[uniqueId] = mesh; 
                 createToggle(uniqueId, `PGM/YAML (${mapName})`, mesh);
+
+                // 編集用にPGMのピクセルデータと座標変換の情報を保持する。
+                // 保存時は gray をそのまま書き出し、表示は rgba を texture 経由で更新する。
+                pgmEdit = {
+                    mapName: mapName,
+                    gray: pgmResult.gray,
+                    originalGray: new Uint8Array(pgmResult.gray),
+                    rgba: pgmResult.data,
+                    width: imgWidth,
+                    height: imgHeight,
+                    resolution: resolution,
+                    originX: origin[0],
+                    originY: origin[1],
+                    texture: texture,
+                    mesh: mesh,
+                    dirty: false,
+                    // ウェイポイント追従の塗りつぶしを取り消せるようにするための記録。
+                    // carveBase: 画素番号 -> 塗る前の値 / carveOwners: 画素番号 -> 単位名の集合
+                    // carveUnits: 単位名 -> その単位が塗った画素番号
+                    carveBase: new Map(),
+                    carveOwners: new Map(),
+                    carveUnits: new Map()
+                };
+                onPgmLoaded(mapName);
+
                 document.getElementById('info').innerHTML += `<br>PGM: ${pgmImageName} 配置完了`;
                 document.getElementById('pgm-opacity-label').style.display = 'flex'; // スライダーを表示
                 document.getElementById('pgm-opacity-slider').value = mesh.material.opacity;
@@ -530,10 +640,7 @@
                 scene.add(newWaypointsGroup);
                 meshRegistry[uniqueId] = newWaypointsGroup;
                 createToggle(uniqueId, `Waypoints (${mapName})`, newWaypointsGroup);
-                if (dragControls) {
-                    dragControls.getObjects().length = 0;
-                    dragControls.getObjects().push(...draggableObjects);
-                }
+                refreshDragControlsObjects();
                 document.getElementById('info').innerHTML += `<br>Waypointを ${waypoints.length} 個配置完了`;
                 if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
                 updateWaypointPath(mapName);
@@ -544,6 +651,8 @@
             }
         }
         function updateWaypointPath(mapName) {
+            // ウェイポイントが動いたときは、通行可になる範囲の表示も追従させる
+            updateCarveRangePreview();
             const componentType = 'waypoint-path';
             const uniqueId = `${componentType}-${mapName}`;
             const labelsId = `waypoint-labels-${mapName}`;
@@ -672,7 +781,25 @@
             const uniqueId = `${type}-${mapName}`;
             const mesh = meshRegistry[uniqueId];
             let elementExists = false;
+            if (type === 'pgm' && pgmEdit && pgmEdit.mapName === mapName) {
+                // 編集対象が無くなるので、編集状態とパネルも片付ける。
+                // ここで中断するとメッシュの後始末ができなくなるため確認は出さず、
+                // 未保存のまま画面を閉じる場合は beforeunload で警告する。
+                pgmEdit = null;
+                isPaintingPgm = false;
+                document.getElementById('pgm-brush-mode').value = 'none';
+                setPgmBrushActive(false);
+                document.getElementById('pgm-edit-fieldset').hidden = true;
+                updateCarveRangePreview();
+            }
             if (type === 'waypoints') {
+                // ウェイポイントが無くなると追従の取り消しもできなくなるので、
+                // ここまでの塗りつぶしは手動編集として確定させる (記録だけ捨てる)
+                if (pgmEdit) {
+                    pgmEdit.carveBase.clear();
+                    pgmEdit.carveOwners.clear();
+                    pgmEdit.carveUnits.clear();
+                }
                 if (selectedWaypoint && mesh && selectedWaypoint.parent === mesh) {
                     selectedWaypoint = null;
                     transformControls.detach();
@@ -730,6 +857,7 @@
                     const pathId = `waypoint-path-${mapName}`;
                     if (meshRegistry[pathId]) unloadMap('waypoint-path', mapName);
                     waypoints = [];
+                    updateCarveRangePreview();
                     calculateAndDisplayTotalDistance();
                 }
             }
@@ -799,6 +927,8 @@
             if (loadCount === 0) {
                 document.getElementById('info').innerHTML += `<br><span class="hud-warning">警告: ロード対象が選択されていません。</span>`;
             }
+            // このマップに保存されている自己位置推定の初期位置を読み込む
+            await loadInitialPose(mapName);
             document.getElementById('loading-message').style.display = 'none';
         }
         window.startLoadProcess = async function() {
@@ -892,6 +1022,25 @@
             };
         }
         function onWaypointClick(event) {
+            // ドラッグ直後の click は選択操作として扱わない
+            if (suppressNextClickAfterDrag) {
+                suppressNextClickAfterDrag = false;
+                return;
+            }
+
+            // 初期位置の指定モード中は、クリック位置を初期位置にする
+            if (isPickingInitialPose) {
+                const point = pointerWorldPosition(event);
+                if (point) {
+                    const yawDeg = parseFloat(document.getElementById('init-pose-yaw').value) || 0;
+                    setInitialPoseFields(point.x, point.y, yawDeg * Math.PI / 180);
+                    togglePickInitialPose();
+                    // 続けて向きを調整できるよう、そのまま選択状態にする
+                    setInitialPoseSelected(true);
+                }
+                return;
+            }
+
             // ウェイポイント追加モード中は選択処理を無効化
             if (isAddingWaypointMode) {
                 const container = document.getElementById('viewer-container');
@@ -930,12 +1079,28 @@
             mouse.y = -(event.clientY / container.clientHeight) * 2 + 1;
             raycaster.setFromCamera(mouse, camera);
 
-            // ウェイポイント追加モードのキーボード解除
-            window.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape' && isAddingWaypointMode) {
-                    toggleAddWaypointMode(null);
+            // 初期位置マーカーの選択。ウェイポイントと同じく、クリックで選ぶと
+            // ドラッグでの移動とギズモでの向き変更ができるようになる。
+            if (initialPoseMarker && initialPoseMarker.visible
+                && raycaster.intersectObject(initialPoseMarker, false).length > 0) {
+                if (selectedWaypoint) {
+                    const prevIndex = selectedWaypoint.userData.waypointIndex;
+                    const prevWp = waypoints[prevIndex];
+                    const prevAttrs = prevWp && prevWp.length > 2
+                        ? (Array.isArray(prevWp[2]) ? prevWp[2][0] : prevWp[2]) : {};
+                    selectedWaypoint.material.color.setHex(getColorByType(prevAttrs.type || 'default'));
+                    selectedWaypoint = null;
+                    document.getElementById('add-waypoint-after-button').disabled = true;
+                    hideWaypointInfo();
                 }
-            });
+                setInitialPoseSelected(true);
+                return;
+            }
+            // マーカー以外をクリックしたら選択を外す
+            if (isInitialPoseSelected) {
+                setInitialPoseSelected(false);
+            }
+
             let waypointsGroup = null;
             for (const key in meshRegistry) {
                 if (key.startsWith('waypoints-')) {
@@ -966,7 +1131,7 @@
                 const intersectedObject = intersects[0].object;
                 if (intersectedObject.isMesh && intersectedObject.name.startsWith('waypoint_sphere_')) {
                     selectedWaypoint = intersectedObject;
-                    dragControls.enabled = true; // 選択されたらドラッグを有効化
+                    refreshDragControlsObjects(); // 選択したものだけドラッグ可能にする
                     transformControls.attach(selectedWaypoint);
 
                     const index = selectedWaypoint.userData.waypointIndex;
@@ -982,11 +1147,11 @@
                     displayWaypointInfo(index, position, attributes);
                     document.getElementById('add-waypoint-after-button').disabled = false;
                 } else {
-                    dragControls.enabled = false; // 選択が外れたらドラッグを無効化
+                    refreshDragControlsObjects(); // 選択が外れたらドラッグ対象も空にする
                     hideWaypointInfo();
                 }
             } else {
-                dragControls.enabled = false; // 選択が外れたらドラッグを無効化
+                refreshDragControlsObjects(); // 選択が外れたらドラッグ対象も空にする
                 hideWaypointInfo();
             }
         }
@@ -1160,6 +1325,7 @@
             updateWaypointPath(currentMapName);
             if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
             calculateAndDisplayTotalDistance();
+            carveAroundWaypoint(index);
         }
 
         function applyYawChange() {
@@ -1210,6 +1376,10 @@
                     waypointsGroup.remove(arrowToDelete);
                 }
                 // 3. waypoints配列とdraggableObjectsからデータを削除
+                //    消える点と区間の塗りつぶしは、削除前に元へ戻しておく
+                releaseWaypointCarve(waypoints[indexToDelete],
+                                     waypoints[indexToDelete - 1],
+                                     waypoints[indexToDelete + 1]);
                 waypoints.splice(indexToDelete, 1);
                 const draggableIndex = draggableObjects.indexOf(selectedWaypoint);
                 if (draggableIndex > -1) {
@@ -1226,7 +1396,6 @@
                     waypointsGroup.remove(child);
                 };
                 draggableObjects.length = 0; // draggableObjectsもクリア
-                dragControls.getObjects().length = 0; // DragControlsのオブジェクトもクリア
                 // waypoints配列に基づいて、すべてのウェイポイントオブジェクトを再作成
                 waypoints.forEach((wp, idx) => {
                     const pos = wp[0];
@@ -1252,7 +1421,7 @@
                     arrowHelper.userData = { waypointIndex: idx };
                     waypointsGroup.add(arrowHelper);
                 });
-                dragControls.getObjects().push(...draggableObjects);
+                refreshDragControlsObjects();
 
                 // 選択状態をクリア
                 selectedWaypoint = null;
@@ -1298,6 +1467,8 @@
 
             const newWpData = [[x, y, z], [0, 0, 0, 1], defaultAttributes]; // [position], [quaternion], [attributes]
             const finalIndex = (insertionIndex === undefined || insertionIndex > waypoints.length) ? waypoints.length : insertionIndex;
+            // 間に挟むと元の区間が無くなるので、その分の塗りつぶしを元へ戻しておく
+            releaseWaypointCarve(null, waypoints[finalIndex - 1], waypoints[finalIndex]);
             waypoints.splice(finalIndex, 0, newWpData);
 
             // 既存のウェイポイントオブジェクトをすべてクリア
@@ -1305,7 +1476,6 @@
                 waypointsGroup.remove(waypointsGroup.children[0]); 
             }
             draggableObjects = [];
-            dragControls.getObjects().length = 0;
 
             // 選択状態をクリア
             selectedWaypoint = null;
@@ -1336,7 +1506,7 @@
                 arrowHelper.userData = { waypointIndex: idx };
                 waypointsGroup.add(arrowHelper);
             });
-            dragControls.getObjects().push(...draggableObjects);
+            refreshDragControlsObjects();
 
             updateWaypointPath(currentMapName);
             if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
@@ -1355,6 +1525,7 @@
             const infoDiv = document.getElementById('info');
 
             if (isAddingWaypointMode) {
+                clearPgmBrush();          // クリックの意味が重ならないようにする
                 container.classList.add('add-waypoint-mode');
                 currentInsertionIndex = insertionMode;
                 let modeText = insertionMode === 0 ? "先頭" : (insertionMode === undefined ? "末尾" : "選択後");
@@ -1401,6 +1572,677 @@
             });
             gridInfoDiv.textContent = newActiveGrid ? `Grid: ${newActiveGrid.userData.scale}` : 'Grid: Off';
         }
+        // =====================================================================
+        // 2Dマップ (PGM) の編集
+        // ---------------------------------------------------------------------
+        // PGMは pcd2pgm_converter.py と同じ規約 (0=障害物 / 254=通行可 / 205=未知)。
+        // 画素の並びも保存時と同じなので、gray配列をそのまま書き戻せば保存できる。
+        // =====================================================================
+
+        /** ブラシを「なし」に戻す。他のモードに入るときや Esc から呼ぶ。 */
+        function clearPgmBrush() {
+            const select = document.getElementById('pgm-brush-mode');
+            if (select.value === 'none') return false;
+            select.value = 'none';
+            setPgmBrushActive(false);
+            return true;
+        }
+
+        function onPgmLoaded(mapName) {
+            const fieldset = document.getElementById('pgm-edit-fieldset');
+            fieldset.hidden = false;
+            document.getElementById('pgm-save-name').value = mapName;
+            document.getElementById('pgm-brush-mode').value = 'none';
+            setPgmBrushActive(false);
+            setPgmEditStatus('');
+            updateCarveRangePreview();
+        }
+
+        function setPgmEditStatus(text, className) {
+            const status = document.getElementById('pgm-edit-status');
+            status.className = className || 'hud-note';
+            status.textContent = text;
+        }
+
+        /** ワールド座標を PGM の画素位置に変換する。
+         *  PGMは上下反転して保存されている (converter の np.flipud) ため、
+         *  行番号は下からの位置を反転して求める。 */
+        function pgmWorldToPixel(x, y) {
+            const col = Math.floor((x - pgmEdit.originX) / pgmEdit.resolution);
+            const rowFromBottom = Math.floor((y - pgmEdit.originY) / pgmEdit.resolution);
+            return { col: col, row: pgmEdit.height - 1 - rowFromBottom };
+        }
+
+        /** 画素を1つ書き換える。変化があれば true。 */
+        function setPgmPixel(col, row, value) {
+            if (col < 0 || col >= pgmEdit.width || row < 0 || row >= pgmEdit.height) {
+                return false;
+            }
+            const index = row * pgmEdit.width + col;
+            if (activeCarveUnit) {
+                // 値が変わらない場合でも、あとで元に戻せるよう所有者として記録しておく
+                recordCarvePixel(index, activeCarveUnit);
+            } else if (pgmEdit.carveOwners.has(index)) {
+                // 手で塗り直した画素は、ウェイポイント追従の管理から外す
+                forgetCarvePixel(index);
+            }
+            if (pgmEdit.gray[index] === value) {
+                return false;
+            }
+            pgmEdit.gray[index] = value;
+            writePGMTexel(pgmEdit.rgba, index * 4, value);
+            return true;
+        }
+
+        /** 半径 radiusMeters の円形ブラシで塗る。 */
+        function paintPgmDisc(worldX, worldY, radiusMeters, value) {
+            const radiusPx = Math.max(0, Math.round(radiusMeters / pgmEdit.resolution));
+            const center = pgmWorldToPixel(worldX, worldY);
+            let changed = false;
+            for (let dy = -radiusPx; dy <= radiusPx; dy++) {
+                for (let dx = -radiusPx; dx <= radiusPx; dx++) {
+                    if (dx * dx + dy * dy > radiusPx * radiusPx) continue;
+                    if (setPgmPixel(center.col + dx, center.row + dy, value)) changed = true;
+                }
+            }
+            return changed;
+        }
+
+        /** 2点を結ぶ帯 (カプセル形) を塗る。ウェイポイント間の通路を作るのに使う。 */
+        function paintPgmCapsule(x1, y1, x2, y2, radiusMeters, value) {
+            const distance = Math.hypot(x2 - x1, y2 - y1);
+            // 円を隙間なく並べられる間隔で刻む。半径が大きいほど粗くてよい。
+            const step = Math.max(pgmEdit.resolution, radiusMeters / 2);
+            const steps = Math.max(1, Math.ceil(distance / step));
+            let changed = false;
+            for (let i = 0; i <= steps; i++) {
+                const t = i / steps;
+                if (paintPgmDisc(x1 + (x2 - x1) * t, y1 + (y2 - y1) * t, radiusMeters, value)) {
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+
+        function commitPgmChanges(changed) {
+            if (!changed) return;
+            pgmEdit.texture.needsUpdate = true;
+            if (!pgmEdit.dirty) {
+                pgmEdit.dirty = true;
+            }
+            setPgmEditStatus('編集中です（未保存）。', 'hud-warning');
+        }
+
+        function currentBrushValue() {
+            const mode = document.getElementById('pgm-brush-mode').value;
+            if (mode === 'free') return PGM_FREE;
+            if (mode === 'occupied') return PGM_OCCUPIED;
+            if (mode === 'unknown') return PGM_UNKNOWN;
+            return null;
+        }
+
+        /** マウス位置からマップ上のワールド座標を求める。 */
+        function pointerWorldPosition(event) {
+            const container = document.getElementById('viewer-container');
+            mouse.x = (event.clientX / container.clientWidth) * 2 - 1;
+            mouse.y = -(event.clientY / container.clientHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            const pgmObjects = Object.keys(meshRegistry)
+                                     .filter(key => key.startsWith('pgm-'))
+                                     .map(key => meshRegistry[key])
+                                     .filter(mesh => mesh.visible);
+            let intersects = [];
+            if (pgmObjects.length > 0) {
+                intersects = raycaster.intersectObjects(pgmObjects);
+            }
+            if (intersects.length === 0 && groundPlane) {
+                intersects = raycaster.intersectObject(groundPlane);
+            }
+            return intersects.length > 0 ? intersects[0].point : null;
+        }
+
+        /** ブラシを選んだときの見た目と、他モードとの排他だけを整える。
+         *  塗るかどうかは押すたびに「その場所が2Dマップか」で判断するので、
+         *  ブラシを選んだままでもカメラ操作とウェイポイントの操作は使える。 */
+        function setPgmBrushActive(active) {
+            if (!orbitControls) return;
+            if (active) {
+                // クリックの意味が衝突するため、同時に使えない指定モードは解除する
+                if (isAddingWaypointMode) toggleAddWaypointMode(null);
+                if (isPickingInitialPose) togglePickInitialPose();
+                setPgmEditStatus('ブラシ選択中: 2Dマップ上を左ドラッグで塗ります。'
+                                 + 'ウェイポイントやカメラの操作もそのまま使えます。'
+                                 + 'Esc か「なし」で終了します。');
+            } else if (pgmEdit && pgmEdit.dirty) {
+                setPgmEditStatus('編集中です（未保存）。', 'hud-warning');
+            } else {
+                setPgmEditStatus('');
+            }
+            updateViewerCursor();
+        }
+
+        /** モードごとにカーソルを取り合わないよう、判定を1か所にまとめる。 */
+        function updateViewerCursor() {
+            if (!renderer) return;
+            const painting = pgmEdit && currentBrushValue() !== null;
+            renderer.domElement.style.cursor =
+                (painting || isPickingInitialPose) ? 'crosshair' : 'auto';
+        }
+
+        /** 押した場所が「塗ってよい2Dマップ」かを調べ、塗る場合だけ座標を返す。
+         *  ウェイポイントや初期位置マーカー、ギズモが手前にあるときは塗らずに
+         *  そちらの操作へ譲るので、ブラシを選んだままでも選択や移動ができる。 */
+        function pgmPaintPoint(event) {
+            if (!pgmEdit || currentBrushValue() === null) return null;
+            if (isAddingWaypointMode || isPickingInitialPose) return null;
+            if (transformControls && transformControls.axis !== null) return null;
+
+            const container = document.getElementById('viewer-container');
+            mouse.x = (event.clientX / container.clientWidth) * 2 - 1;
+            mouse.y = -(event.clientY / container.clientHeight) * 2 + 1;
+            raycaster.setFromCamera(mouse, camera);
+
+            const pgmObjects = Object.keys(meshRegistry)
+                                     .filter(key => key.startsWith('pgm-'))
+                                     .map(key => meshRegistry[key])
+                                     .filter(mesh => mesh.visible);
+            if (pgmObjects.length === 0) return null;
+
+            // 手前にあるものを優先したいので、2Dマップと一緒にレイキャストする
+            const others = draggableObjects.filter(
+                obj => obj.visible && obj.parent && obj.parent.visible);
+            if (initialPoseMarker && initialPoseMarker.visible) others.push(initialPoseMarker);
+
+            const hits = raycaster.intersectObjects(pgmObjects.concat(others), false);
+            if (hits.length === 0) return null;
+            return pgmObjects.includes(hits[0].object) ? hits[0].point : null;
+        }
+
+        function onPgmPointerDown(event) {
+            if (event.button !== 0) return;
+            if (!renderer || event.target !== renderer.domElement) return;
+            const point = pgmPaintPoint(event);
+            if (!point) return;
+            // 塗ると決めたときだけ、カメラ回転やドラッグに渡さない
+            event.stopPropagation();
+            isPaintingPgm = true;
+            // 押した位置を起点にしておき、最初の移動から線がつながるようにする
+            pgmEdit.lastPaintPoint = { x: point.x, y: point.y };
+            const radius = parseFloat(document.getElementById('pgm-brush-radius').value) || 0.1;
+            commitPgmChanges(paintPgmDisc(point.x, point.y, radius, currentBrushValue()));
+        }
+
+        function onPgmPointerMove(event) {
+            if (!isPaintingPgm || !pgmEdit) return;
+            const value = currentBrushValue();
+            if (value === null) return;
+            event.stopPropagation();
+            const point = pointerWorldPosition(event);
+            if (!point) return;
+            const radius = parseFloat(document.getElementById('pgm-brush-radius').value) || 0.1;
+            // 前回位置とつなぐことで、マウスを速く動かしても線が途切れないようにする。
+            let changed;
+            if (pgmEdit.lastPaintPoint) {
+                changed = paintPgmCapsule(pgmEdit.lastPaintPoint.x, pgmEdit.lastPaintPoint.y,
+                                          point.x, point.y, radius, value);
+            } else {
+                changed = paintPgmDisc(point.x, point.y, radius, value);
+            }
+            pgmEdit.lastPaintPoint = { x: point.x, y: point.y };
+            commitPgmChanges(changed);
+        }
+
+        function onPgmPointerUp(event) {
+            if (!isPaintingPgm) return;
+            isPaintingPgm = false;
+            if (pgmEdit) pgmEdit.lastPaintPoint = null;
+            // 塗り終わりの click でウェイポイントの選択が変わらないようにする。
+            // ビューワの外で離したときは click が来ないので、フラグを残さない。
+            if (event && renderer && event.target === renderer.domElement) {
+                suppressNextClickAfterDrag = true;
+            }
+        }
+
+        // =====================================================================
+        // ウェイポイント追従の塗りつぶしの取り消し
+        // ---------------------------------------------------------------------
+        // 塗った画素を「単位」(ウェイポイント1点、または隣り合う2点の区間) ごとに
+        // 覚えておき、ウェイポイントを置き直したときに前回の分を元に戻してから
+        // 塗り直す。重なった部分は最後の単位が消えたときだけ元の値へ戻す。
+        // =====================================================================
+
+        /** ウェイポイントに付けておく変わらない目印。並び替えても追従できるようにする。 */
+        function waypointCarveId(wp) {
+            if (!wp) return null;
+            if (wp.carveId === undefined) wp.carveId = `wp${carveIdSeq++}`;
+            return wp.carveId;
+        }
+
+        function nodeCarveKey(wp) {
+            const id = waypointCarveId(wp);
+            return id === null ? null : `node:${id}`;
+        }
+
+        function edgeCarveKey(wpA, wpB) {
+            if (!wpA || !wpB) return null;
+            return `edge:${waypointCarveId(wpA)}>${waypointCarveId(wpB)}`;
+        }
+
+        /** 1画素を「この単位が塗った」と記録する。塗る前の値も控えておく。 */
+        function recordCarvePixel(index, key) {
+            if (!pgmEdit.carveBase.has(index)) {
+                pgmEdit.carveBase.set(index, pgmEdit.gray[index]);
+            }
+            let owners = pgmEdit.carveOwners.get(index);
+            if (!owners) {
+                owners = new Set();
+                pgmEdit.carveOwners.set(index, owners);
+            }
+            if (owners.has(key)) return;   // 同じ単位で重ねて塗った分は覚え直さない
+            owners.add(key);
+            const pixels = pgmEdit.carveUnits.get(key);
+            if (pixels) pixels.push(index);
+        }
+
+        /** 1画素を追従塗りつぶしの管理から外す (手で塗り直したとき)。 */
+        function forgetCarvePixel(index) {
+            pgmEdit.carveOwners.delete(index);
+            pgmEdit.carveBase.delete(index);
+        }
+
+        /** ある単位が塗った分を元に戻す。他の単位も塗っている画素は残す。 */
+        function releaseCarveUnit(key) {
+            if (!key) return false;
+            const pixels = pgmEdit.carveUnits.get(key);
+            if (!pixels) return false;
+            pgmEdit.carveUnits.delete(key);
+            let changed = false;
+            for (const index of pixels) {
+                const owners = pgmEdit.carveOwners.get(index);
+                if (!owners || !owners.delete(key)) continue;   // 手で塗り直された画素
+                if (owners.size > 0) continue;                  // まだ他の単位が使っている
+                const base = pgmEdit.carveBase.get(index);
+                forgetCarvePixel(index);
+                if (base !== undefined && pgmEdit.gray[index] !== base) {
+                    pgmEdit.gray[index] = base;
+                    writePGMTexel(pgmEdit.rgba, index * 4, base);
+                    changed = true;
+                }
+            }
+            return changed;
+        }
+
+        /** 単位を塗り直す。前回この単位で塗った分は先に元へ戻す。
+         *  paint が無いときは元に戻すだけ。 */
+        function recarveUnit(key, paint) {
+            if (!key) return false;
+            let changed = releaseCarveUnit(key);
+            if (!paint) return changed;
+            pgmEdit.carveUnits.set(key, []);
+            activeCarveUnit = key;
+            try {
+                if (paint()) changed = true;
+            } finally {
+                activeCarveUnit = null;
+            }
+            if (pgmEdit.carveUnits.get(key).length === 0) pgmEdit.carveUnits.delete(key);
+            return changed;
+        }
+
+        /** ウェイポイントを消す/間に挟むときに、無くなる区間の塗りつぶしを元に戻す。 */
+        function releaseWaypointCarve(target, previous, next) {
+            if (!pgmEdit) return;
+            let changed = false;
+            if (target) {
+                changed = releaseCarveUnit(nodeCarveKey(target)) || changed;
+                changed = releaseCarveUnit(edgeCarveKey(previous, target)) || changed;
+                changed = releaseCarveUnit(edgeCarveKey(target, next)) || changed;
+            }
+            if (previous && next) {
+                changed = releaseCarveUnit(edgeCarveKey(previous, next)) || changed;
+            }
+            commitPgmChanges(changed);
+        }
+
+        /** ウェイポイントを動かしたときに、その周囲と前後の区間を通行可にする。
+         *  置き直したときは、動かす前に塗った分を元に戻してから塗り直す。 */
+        function carveAroundWaypoint(index) {
+            if (!pgmEdit) return;
+            if (!document.getElementById('pgm-follow-waypoints').checked) return;
+            const current = waypoints[index];
+            if (!current) return;
+            const margin = parseFloat(document.getElementById('pgm-waypoint-margin').value);
+            const enabled = margin > 0;
+
+            const [x, y] = current[0];
+            const previous = waypoints[index - 1];
+            const next = waypoints[index + 1];
+
+            let changed = recarveUnit(nodeCarveKey(current),
+                enabled && (() => paintPgmDisc(x, y, margin, PGM_FREE)));
+            changed = recarveUnit(edgeCarveKey(previous, current),
+                enabled && previous && (() => paintPgmCapsule(
+                    previous[0][0], previous[0][1], x, y, margin, PGM_FREE))) || changed;
+            changed = recarveUnit(edgeCarveKey(current, next),
+                enabled && next && (() => paintPgmCapsule(
+                    x, y, next[0][0], next[0][1], margin, PGM_FREE))) || changed;
+            commitPgmChanges(changed);
+        }
+
+        // =====================================================================
+        // 通行可にする範囲の表示
+        // ---------------------------------------------------------------------
+        // 追従で塗られる範囲 (各ウェイポイントの円と、その間を結ぶ帯) は
+        // 塗ったあとの色だけでは周囲と見分けにくいので、地図の上に重ねて示す。
+        // =====================================================================
+
+        const CARVE_RANGE_COLOR = 0x00e5ff;   // 地図の赤/緑やマーカーのマゼンタと被らない色
+        const carveRangeFillMaterial = new THREE.MeshBasicMaterial({
+            color: CARVE_RANGE_COLOR, transparent: true, opacity: 0.16,
+            depthWrite: false, side: THREE.DoubleSide
+        });
+        const carveRangeLineMaterial = new THREE.LineBasicMaterial({
+            color: CARVE_RANGE_COLOR, transparent: true, opacity: 0.85, depthWrite: false
+        });
+
+        function clearCarveRangePreview() {
+            if (!carveRangeGroup) return;
+            while (carveRangeGroup.children.length > 0) {
+                const child = carveRangeGroup.children[0];
+                carveRangeGroup.remove(child);
+                if (child.geometry) child.geometry.dispose();   // 材質は共通なので破棄しない
+            }
+        }
+
+        /** 通行可になる範囲を描き直す。ウェイポイントを動かすたびに呼ばれる。 */
+        function updateCarveRangePreview() {
+            if (!scene) return;
+            if (!carveRangeGroup) {
+                carveRangeGroup = new THREE.Group();
+                carveRangeGroup.name = 'carve-range-preview';
+                carveRangeGroup.renderOrder = 2;   // 地図より後に描いて隠れないようにする
+                scene.add(carveRangeGroup);
+            }
+            clearCarveRangePreview();
+
+            const toggle = document.getElementById('pgm-show-carve-range');
+            if (!pgmEdit || !toggle || !toggle.checked || waypoints.length === 0) return;
+            const margin = parseFloat(document.getElementById('pgm-waypoint-margin').value);
+            if (!(margin > 0)) return;
+
+            // 地図 (Z=0) のすぐ上に置く。ウェイポイント(半径0.3の球)より下なので隠さない。
+            const z = 0.02;
+
+            const circlePoints = [];
+            const SEGMENTS = 48;
+            for (let i = 0; i <= SEGMENTS; i++) {
+                const t = (i / SEGMENTS) * Math.PI * 2;
+                circlePoints.push(new THREE.Vector3(Math.cos(t) * margin, Math.sin(t) * margin, 0));
+            }
+
+            waypoints.forEach((wp, index) => {
+                const [x, y] = wp[0];
+                // ウェイポイントの周囲 (円)
+                const disc = new THREE.Mesh(
+                    new THREE.CircleGeometry(margin, SEGMENTS), carveRangeFillMaterial);
+                disc.position.set(x, y, z);
+                carveRangeGroup.add(disc);
+                const ring = new THREE.LineLoop(
+                    new THREE.BufferGeometry().setFromPoints(circlePoints), carveRangeLineMaterial);
+                ring.position.set(x, y, z);
+                carveRangeGroup.add(ring);
+
+                // 次のウェイポイントとの間 (帯)
+                const next = waypoints[index + 1];
+                if (!next) return;
+                const [nx, ny] = next[0];
+                const length = Math.hypot(nx - x, ny - y);
+                if (length <= 0) return;
+                const angle = Math.atan2(ny - y, nx - x);
+                const band = new THREE.Mesh(
+                    new THREE.PlaneGeometry(length, margin * 2), carveRangeFillMaterial);
+                band.position.set((x + nx) / 2, (y + ny) / 2, z);
+                band.rotation.z = angle;
+                carveRangeGroup.add(band);
+
+                // 帯の長辺だけを線で描く。短辺は円の内側に隠れるので描かない。
+                const edges = new THREE.LineSegments(
+                    new THREE.BufferGeometry().setFromPoints([
+                        new THREE.Vector3(-length / 2, margin, 0), new THREE.Vector3(length / 2, margin, 0),
+                        new THREE.Vector3(-length / 2, -margin, 0), new THREE.Vector3(length / 2, -margin, 0)
+                    ]), carveRangeLineMaterial);
+                edges.position.copy(band.position);
+                edges.rotation.z = angle;
+                carveRangeGroup.add(edges);
+            });
+        }
+
+        function resetPgmEdits() {
+            if (!pgmEdit) return;
+            pgmEdit.gray.set(pgmEdit.originalGray);
+            for (let i = 0; i < pgmEdit.gray.length; i++) {
+                writePGMTexel(pgmEdit.rgba, i * 4, pgmEdit.gray[i]);
+            }
+            pgmEdit.texture.needsUpdate = true;
+            pgmEdit.dirty = false;
+            pgmEdit.carveBase.clear();
+            pgmEdit.carveOwners.clear();
+            pgmEdit.carveUnits.clear();
+            setPgmEditStatus('編集を破棄して読み込み直後の状態に戻しました。');
+        }
+
+        async function savePgmToServer() {
+            if (!pgmEdit) {
+                alert('2Dマップ (PGM) がロードされていません。');
+                return;
+            }
+            const saveAs = document.getElementById('pgm-save-name').value.trim();
+            if (!saveAs) {
+                setPgmEditStatus('保存するマップ名を入力してください。', 'hud-error');
+                return;
+            }
+            if (saveAs === pgmEdit.mapName
+                && !confirm(`「${saveAs}.pgm」を上書きします。よろしいですか？`)) {
+                return;
+            }
+
+            setPgmEditStatus('保存しています…');
+            try {
+                const params = new URLSearchParams({
+                    source_map: pgmEdit.mapName,
+                    save_as: saveAs,
+                    width: String(pgmEdit.width),
+                    height: String(pgmEdit.height)
+                });
+                const response = await fetch(`/save_pgm?${params.toString()}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    body: pgmEdit.gray
+                });
+                const result = await response.json();
+                if (result.status !== 'success') {
+                    setPgmEditStatus(result.message || '保存に失敗しました。', 'hud-error');
+                    return;
+                }
+                pgmEdit.originalGray = new Uint8Array(pgmEdit.gray);
+                pgmEdit.dirty = false;
+                setPgmEditStatus(result.message);
+            } catch (error) {
+                console.error('PGMの保存中にエラーが発生しました:', error);
+                setPgmEditStatus('サーバーと通信できませんでした。', 'hud-error');
+            }
+        }
+
+        // =====================================================================
+        // 自己位置推定 (simple_fastlio_localization) の初期位置
+        // ---------------------------------------------------------------------
+        // data/<マップ名>/init_pose.txt に "x,y,z,qx,qy,qz,qw" で保存する。
+        // 自律走行の起動時に nav_common.sh の load_initial_poses が読み込む。
+        // =====================================================================
+
+        // 選択中も同じ色のままにする。色が変わると地図上での見え方が変わってしまい、
+        // 位置合わせの目印として使いにくいため、選択は回転ギズモの有無で示す。
+        const INITIAL_POSE_COLOR = 0xff00ff;          // マゼンタ
+
+        function ensureInitialPoseMarker() {
+            if (initialPoseMarker) return initialPoseMarker;
+
+            // ウェイポイントと同じ操作感にするため、マーカーは1つの Mesh にする。
+            // DragControls は recursive にヒットした「子」を掴むので、Group にすると
+            // 部品だけが動いてしまう。球と円錐を1つのジオメトリに結合しておく。
+            const base = new THREE.SphereGeometry(0.25, 16, 16);
+            // 円錐の軸は既定で +Y なので、-90度回して +X (yaw=0の向き) を向かせ、
+            // 球の中心が姿勢の位置になるよう前方にずらす。
+            const cone = new THREE.ConeGeometry(0.28, 1.0, 16);
+            cone.rotateZ(-Math.PI / 2);
+            cone.translate(0.75, 0, 0);
+
+            const geometry = BufferGeometryUtils.mergeGeometries([base, cone]);
+            const material = new THREE.MeshBasicMaterial({ color: INITIAL_POSE_COLOR });
+            const marker = new THREE.Mesh(geometry, material);
+            marker.name = 'initial_pose_marker';
+            marker.userData.isInitialPose = true;
+
+            scene.add(marker);
+            initialPoseMarker = marker;
+            // ウェイポイントと同じようにドラッグできるよう、対象に加える
+            refreshDragControlsObjects();
+            return marker;
+        }
+
+        /** DragControls の対象を「いま選択しているもの」だけに絞る。
+         *  対象を全部入れておくと、選択していないウェイポイントや初期位置マーカーまで
+         *  ドラッグで動かせてしまうため、選択状態が変わるたびにここを通す。 */
+        function refreshDragControlsObjects() {
+            if (!dragControls) return;
+            const objects = dragControls.getObjects();
+            objects.length = 0;
+            if (isInitialPoseSelected && initialPoseMarker) {
+                objects.push(initialPoseMarker);
+            } else if (selectedWaypoint) {
+                objects.push(selectedWaypoint);
+            }
+            dragControls.enabled = objects.length > 0;
+        }
+
+        /** 初期位置マーカーの選択状態を切り替える。 */
+        function setInitialPoseSelected(selected) {
+            isInitialPoseSelected = selected;
+            if (!initialPoseMarker) return;
+            if (selected) {
+                // 「次のWPを指す」でギズモを止めていても、初期位置の向きは変えられるようにする
+                transformControls.enabled = true;
+                transformControls.attach(initialPoseMarker);
+                setInitialPoseStatus('初期位置を選択中です。ドラッグで移動、ギズモで向きを変更できます。');
+            } else {
+                if (transformControls.object === initialPoseMarker) {
+                    transformControls.detach();
+                }
+                // ウェイポイント側の設定に戻す
+                transformControls.enabled = !document.getElementById('auto-orient-waypoints').checked;
+            }
+            refreshDragControlsObjects();
+        }
+
+        /** マーカーの現在の位置・向きを入力欄に反映する（ドラッグ/回転の結果を表示）。 */
+        function syncInitialPoseFieldsFromMarker() {
+            if (!initialPoseMarker) return;
+            const q = initialPoseMarker.quaternion;
+            const yaw = quaternionToYaw(q.x, q.y, q.z, q.w);
+            document.getElementById('init-pose-x').value = initialPoseMarker.position.x.toFixed(3);
+            document.getElementById('init-pose-y').value = initialPoseMarker.position.y.toFixed(3);
+            document.getElementById('init-pose-yaw').value = (yaw * 180 / Math.PI).toFixed(1);
+        }
+
+        function updateInitialPoseMarker(x, y, yawRad) {
+            const marker = ensureInitialPoseMarker();
+            marker.position.set(x, y, 0.1);
+            marker.rotation.z = yawRad;
+            marker.visible = true;
+        }
+
+        function applyInitialPoseFromFields() {
+            const x = parseFloat(document.getElementById('init-pose-x').value) || 0;
+            const y = parseFloat(document.getElementById('init-pose-y').value) || 0;
+            const yawDeg = parseFloat(document.getElementById('init-pose-yaw').value) || 0;
+            updateInitialPoseMarker(x, y, yawDeg * Math.PI / 180);
+        }
+
+        function setInitialPoseFields(x, y, yawRad) {
+            document.getElementById('init-pose-x').value = x.toFixed(3);
+            document.getElementById('init-pose-y').value = y.toFixed(3);
+            document.getElementById('init-pose-yaw').value = (yawRad * 180 / Math.PI).toFixed(1);
+            updateInitialPoseMarker(x, y, yawRad);
+        }
+
+        function setInitialPoseStatus(text, className) {
+            const status = document.getElementById('init-pose-status');
+            status.className = className || 'hud-note';
+            status.textContent = text;
+        }
+
+        async function loadInitialPose(mapName) {
+            if (!mapName) return;
+            try {
+                const response = await fetch(`/initial_pose/${encodeURIComponent(mapName)}`);
+                const result = await response.json();
+                if (result.status !== 'success') {
+                    setInitialPoseStatus(result.message || '初期位置を読み込めませんでした。', 'hud-error');
+                    return;
+                }
+                const pose = result.pose;
+                initialPoseZ = pose[2];
+                setInitialPoseFields(pose[0], pose[1], quaternionToYaw(pose[3], pose[4], pose[5], pose[6]));
+                setInitialPoseStatus(result.exists
+                    ? `data/${mapName}/init_pose.txt を読み込みました。`
+                    : (result.message || '初期位置は未設定です。'));
+            } catch (error) {
+                console.error('初期位置の読み込みに失敗しました:', error);
+                setInitialPoseStatus('サーバーと通信できませんでした。', 'hud-error');
+            }
+        }
+
+        async function saveInitialPose() {
+            if (!currentMapName) {
+                alert('マップがロードされていません。');
+                return;
+            }
+            const x = parseFloat(document.getElementById('init-pose-x').value) || 0;
+            const y = parseFloat(document.getElementById('init-pose-y').value) || 0;
+            const yaw = (parseFloat(document.getElementById('init-pose-yaw').value) || 0) * Math.PI / 180;
+            // yaw だけの回転なので qx=qy=0
+            const pose = [x, y, initialPoseZ, 0.0, 0.0, Math.sin(yaw / 2), Math.cos(yaw / 2)];
+
+            setInitialPoseStatus('保存しています…');
+            try {
+                const response = await fetch('/save_initial_pose', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ map_name: currentMapName, pose: pose })
+                });
+                const result = await response.json();
+                setInitialPoseStatus(result.message,
+                                     result.status === 'success' ? 'hud-note' : 'hud-error');
+            } catch (error) {
+                console.error('初期位置の保存に失敗しました:', error);
+                setInitialPoseStatus('サーバーと通信できませんでした。', 'hud-error');
+            }
+        }
+
+        function togglePickInitialPose() {
+            isPickingInitialPose = !isPickingInitialPose;
+            const button = document.getElementById('pick-initial-pose-button');
+            button.textContent = isPickingInitialPose
+                ? 'クリックで指定中… (もう一度押すと解除)'
+                : 'マップ上でクリックして指定';
+            if (isPickingInitialPose) {
+                clearPgmBrush();          // クリックの意味が重ならないようにする
+                setInitialPoseStatus('マップ上をクリックして初期位置を指定してください。向きは Yaw で調整します。');
+            }
+            updateViewerCursor();
+        }
+
         function init() {
             const container = document.getElementById('viewer-container');
             scene = new THREE.Scene();
@@ -1505,8 +2347,15 @@
             transformControls.addEventListener('dragging-changed', function (event) {
                 orbitControls.enabled = !event.value;
             });
-            transformControls.addEventListener('mouseUp', () => { if (selectedWaypoint) dragControls.enabled = true; }); // この行は変更なし
+            transformControls.addEventListener('mouseUp', () => {
+                refreshDragControlsObjects();
+            });
             transformControls.addEventListener('objectChange', (event) => {
+                // 初期位置マーカーの回転は、そのまま Yaw の入力欄に反映する
+                if (transformControls.object === initialPoseMarker) {
+                    syncInitialPoseFieldsFromMarker();
+                    return;
+                }
                 if (selectedWaypoint) {
                     const index = selectedWaypoint.userData.waypointIndex;
                     // TransformControlsはオブジェクトのquaternionを直接変更するため、
@@ -1534,6 +2383,12 @@
             transformControls.addEventListener('dragging-changed', function (event) {
                 orbitControls.enabled = !event.value;
                 if (!event.value) { // ドラッグが終了した時
+                    if (transformControls.object === initialPoseMarker) {
+                        syncInitialPoseFieldsFromMarker();
+                        setInitialPoseStatus('初期位置の向きを変更しました。「初期位置を保存」で書き込みます。');
+                        // ギズモ上で離した click で選択が外れないようにする
+                        suppressNextClickAfterDrag = true;
+                    }
                     if (selectedWaypoint) {
                         displayWaypointInfo(selectedWaypoint.userData.waypointIndex, selectedWaypoint.position, selectedWaypoint.userData.attributes);
                     }
@@ -1547,6 +2402,12 @@
                 transformControls.enabled = false;
             });
             dragControls.addEventListener('drag', function (event) {
+                // 初期位置マーカーはウェイポイントとは別扱い
+                if (event.object === initialPoseMarker) {
+                    event.object.position.z = 0.1;
+                    syncInitialPoseFieldsFromMarker();
+                    return;
+                }
                 const index = event.object.userData.waypointIndex;
                 // Z軸を固定
                 event.object.position.z = 0.0;
@@ -1567,10 +2428,19 @@
                 displayWaypointInfo(index, event.object.position, event.object.userData.attributes);
                 updateWaypointPath(currentMapName);
                 calculateAndDisplayTotalDistance();
+                // ドラッグに追従して2Dマップの通行可領域を広げる
+                carveAroundWaypoint(index);
             });
             dragControls.addEventListener('dragend', function (event) {
                 orbitControls.enabled = true;
                 transformControls.enabled = true;
+                if (event.object === initialPoseMarker) {
+                    syncInitialPoseFieldsFromMarker();
+                    setInitialPoseStatus('初期位置を移動しました。「初期位置を保存」で書き込みます。');
+                    // 続けて向きを変えられるよう、選択を維持する
+                    suppressNextClickAfterDrag = true;
+                    return;
+                }
                 // waypoints 配列の座標を更新
                 const index = event.object.userData.waypointIndex;
                 if (waypoints[index]) {
@@ -1581,8 +2451,22 @@
                 if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
                 updateWaypointPath(currentMapName);
                 calculateAndDisplayTotalDistance();
+                carveAroundWaypoint(index);
             });
             dragControls.enabled = false; // 初期状態ではドラッグを無効化
+
+            // ギズモの上で押したときは、移動(DragControls)ではなく回転を優先する。
+            // 両方が同じ canvas の pointerdown を見ているため、DragControls より先に
+            // 判定できるよう window のキャプチャ段階で処理する。
+            window.addEventListener('pointerdown', () => {
+                if (transformControls.axis !== null) {
+                    dragControls.enabled = false;
+                }
+            }, true);
+            window.addEventListener('pointerup', () => {
+                // 押している間だけの抑止なので、離したら選択状態から作り直す
+                refreshDragControlsObjects();
+            });
 
 
             pcdLoader = new PCDLoader();
@@ -1597,6 +2481,45 @@
             document.getElementById('edit-x').addEventListener('change', applyPositionChange);
             document.getElementById('edit-y').addEventListener('change', applyPositionChange);
             document.getElementById('delete-waypoint-button').addEventListener('click', deleteSelectedWaypoint);
+            // --- 2Dマップ (PGM) 編集 ---
+            const brushModeSelect = document.getElementById('pgm-brush-mode');
+            brushModeSelect.addEventListener('change', () => {
+                setPgmBrushActive(brushModeSelect.value !== 'none');
+            });
+            // OrbitControls / DragControls より先に「塗るかどうか」を決める必要が
+            // あるため、window のキャプチャ段階で受け取り、塗るときだけ伝播を止める。
+            window.addEventListener('pointerdown', onPgmPointerDown, true);
+            window.addEventListener('pointermove', onPgmPointerMove, true);
+            window.addEventListener('pointerup', onPgmPointerUp);
+            // 各モードのキーボード解除
+            window.addEventListener('keydown', (event) => {
+                if (event.key !== 'Escape') return;
+                if (isAddingWaypointMode) {
+                    toggleAddWaypointMode(null);
+                } else if (isPickingInitialPose) {
+                    togglePickInitialPose();
+                } else {
+                    clearPgmBrush();
+                }
+            });
+            document.getElementById('pgm-show-carve-range')
+                    .addEventListener('change', updateCarveRangePreview);
+            document.getElementById('pgm-waypoint-margin')
+                    .addEventListener('input', updateCarveRangePreview);
+            document.getElementById('save-pgm-button').addEventListener('click', savePgmToServer);
+            document.getElementById('reset-pgm-button').addEventListener('click', resetPgmEdits);
+
+            // --- 初期位置 (自己位置推定) ---
+            document.getElementById('pick-initial-pose-button')
+                    .addEventListener('click', togglePickInitialPose);
+            document.getElementById('save-initial-pose-button')
+                    .addEventListener('click', saveInitialPose);
+            document.getElementById('reload-initial-pose-button')
+                    .addEventListener('click', () => loadInitialPose(currentMapName));
+            ['init-pose-x', 'init-pose-y', 'init-pose-yaw'].forEach(id => {
+                document.getElementById(id).addEventListener('change', applyInitialPoseFromFields);
+            });
+
             document.getElementById('add-waypoint-end-button').addEventListener('click', () => toggleAddWaypointMode(undefined));
             document.getElementById('add-waypoint-start-button').addEventListener('click', () => toggleAddWaypointMode(0));
             document.getElementById('add-waypoint-after-button').addEventListener('click', () => {
@@ -1690,6 +2613,14 @@
             updateAdaptiveGrid();
             renderer.render(scene, camera);
         }
+
+        // 2Dマップの編集を保存しないまま画面を閉じようとしたら警告する
+        window.addEventListener('beforeunload', (event) => {
+            if (pgmEdit && pgmEdit.dirty) {
+                event.preventDefault();
+                event.returnValue = '';
+            }
+        });
 
         async function saveWaypointsToServer() {
             if (!currentMapName) {
