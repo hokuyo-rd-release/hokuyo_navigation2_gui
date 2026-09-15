@@ -12,7 +12,11 @@ import yaml
 import pathlib
 import csv # Added for CSV handling
 import json # Added for JSON handling
+import math
 import re
+import urllib.error
+import urllib.parse
+import urllib.request
 
 from flask import Flask, request, render_template, redirect, jsonify, url_for, flash, send_from_directory
 from flask_sockets import Sockets
@@ -22,6 +26,18 @@ from geventwebsocket.handler import WebSocketHandler
 from geventwebsocket.websocket import WebSocket
 
 from ament_index_python.packages import get_package_prefix, PackageNotFoundError
+
+try:
+    import map_from_points
+except ImportError as e:
+    print(f"Warning: map_from_points を読み込めません (Google から地図を作る機能は使えません): {e}")
+    map_from_points = None
+
+try:
+    import map_rebase
+except ImportError as e:
+    print(f"Warning: map_rebase を読み込めません (初期位置に地図の原点を合わせる機能は使えません): {e}")
+    map_rebase = None
 
 try:
     from rosbag2_filter_core import get_topic_list, filter_rosbag
@@ -1263,6 +1279,563 @@ def save_initial_pose():
     })
 
 
+@app.route('/rebase_map_origin', methods=['POST'])
+def rebase_map_origin():
+    """初期位置を地図の新しい原点にする (API)
+
+    JSON: {map_name, pose: [x, y, z, qx, qy, qz, qw], dry_run}
+    初期位置 (x, y) が (0, 0) になるよう、地図 (PGM/YAML・PCD)・ウェイポイント・基準点 (init_lat_lon_alt.txt)・
+    パラメータ調整の元の点群と設定を平行移動し、init_pose.txt は (0, 0, z) と向きで保存する。
+    dry_run なら書き換えるファイルの一覧だけを返す。
+    """
+    if map_rebase is None:
+        return jsonify({'status': 'error', 'message': '原点を合わせる機能に必要な Python パッケージ (numpy, PyYAML) がありません。'}), 500
+    data = request.get_json(silent=True) or {}
+    map_name = str(data.get('map_name') or '')
+    pose = data.get('pose')
+    if not _MAP_NAME_PATTERN.match(map_name) or _initial_pose_path(map_name) is None \
+            or not _is_safe_path(os.path.join(MAP_DIR, f'{map_name}.yaml'), MAP_DIR) \
+            or not _is_safe_path(os.path.join(WP_DIR, f'{map_name}.json'), WP_DIR):
+        return jsonify({'status': 'error', 'message': '不正なマップ名です。'}), 400
+    try:
+        pose = [float(v) for v in pose]
+        if len(pose) != 7 or not all(math.isfinite(v) for v in pose):
+            raise ValueError
+    except (TypeError, ValueError):
+        return jsonify({'status': 'error', 'message': '初期位置は数値の x,y,z,qx,qy,qz,qw で指定してください。'}), 400
+
+    relpath = lambda p: os.path.relpath(p, HOKUYO_NAV2_PKG_PATH)
+    if data.get('dry_run'):
+        try:
+            map_rebase.validate_rebase(DATA_DIR, map_name, pose[0], pose[1], default_latlon=DEFAULT_LAT_LON_ALT)
+        except map_rebase.RebaseError as e:
+            return jsonify({'status': 'error', 'message': str(e)}), e.status
+        plan = map_rebase.plan_rebase(MAP_DIR, DATA_DIR, WP_DIR, map_name)
+        return jsonify({'status': 'success',
+                        'files': [relpath(p) for _, p in plan] + [relpath(_initial_pose_path(map_name))]})
+    try:
+        result = map_rebase.rebase_map(MAP_DIR, DATA_DIR, WP_DIR, map_name, pose[0], pose[1], pose,
+                                       default_latlon=DEFAULT_LAT_LON_ALT)
+    except map_rebase.RebaseError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), e.status
+    except (OSError, ValueError, yaml.YAMLError) as e:
+        return jsonify({'status': 'error', 'message': f'地図の原点を合わせられませんでした (ファイルは変えていません): {e}'}), 500
+    return jsonify({
+        'status': 'success',
+        'message': f'地図「{map_name}」の原点を初期位置に合わせました (x {result["dx"]:+.3f} m, y {result["dy"]:+.3f} m ずらしました)。',
+        'files': [relpath(p) for p in result['files']],
+        'dx': result['dx'],
+        'dy': result['dy'],
+        'origin': result['origin'],
+        'notes': result['notes'],
+    })
+
+
+# 3Dビューアの背景 (Google の衛星写真 / 3D Tiles) に使う API キー。
+# 環境変数を優先し、無ければ GUI フォルダのファイルから読む。どちらも git には含めない。
+GOOGLE_MAPS_API_KEY_ENV = 'GOOGLE_MAPS_API_KEY'
+GOOGLE_MAPS_API_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                        'google_maps_api_key.txt')
+# 場所の検索 (Geocoding / Places) にサーバーから使うキー。ブラウザ用のキーをリファラで制限していると
+# サーバーからは使えないので、別のキー (IP アドレスで制限) を置けるようにする。無ければブラウザ用のキーを使う。
+GOOGLE_MAPS_SERVER_API_KEY_ENV = 'GOOGLE_MAPS_SERVER_API_KEY'
+GOOGLE_MAPS_SERVER_API_KEY_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
+                                               'google_maps_server_api_key.txt')
+# マッピングで GNSS を使わなかったときに init_lat_lon_alt.txt へ書かれる既定値
+# (scripts/mapping/lio_raw.bash, scripts/navigation/nav_common.sh と同じ値)。
+# この値のときは実際の場所を表していないので、背景と位置を合わせられない。
+DEFAULT_LAT_LON_ALT = (35.0, 135.0, 40.0)
+
+
+def _read_api_key(env_name, file_path):
+    """環境変数かファイル (最初の行) からキーを読む。(キー, 読み込み元) を返す。未設定なら ('', None)。"""
+    key = os.environ.get(env_name, '').strip()
+    if key:
+        return key, 'env'
+    try:
+        with open(file_path, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f
+                     if line.strip() and not line.lstrip().startswith('#')]
+    except OSError:
+        return '', None
+    return (lines[0], 'file') if lines else ('', None)
+
+
+def _google_maps_api_key():
+    """ブラウザで使うキー (Map Tiles API)。(キー, 読み込み元) を返す。"""
+    return _read_api_key(GOOGLE_MAPS_API_KEY_ENV, GOOGLE_MAPS_API_KEY_FILE)
+
+
+def _google_maps_server_api_key():
+    """サーバーから使うキー (場所の検索)。専用のキーが無ければブラウザ用のキーを使う。"""
+    key, source = _read_api_key(GOOGLE_MAPS_SERVER_API_KEY_ENV, GOOGLE_MAPS_SERVER_API_KEY_FILE)
+    return (key, source) if key else _google_maps_api_key()
+
+
+@app.route('/google_maps_config', methods=['GET'])
+def google_maps_config():
+    """3Dビューアの Google 背景用の設定を返す (API)
+
+    Map Tiles API はブラウザから直接呼ぶため、キーはブラウザに渡る。
+    Google Cloud 側で「Map Tiles API のみ」「リファラ制限」を掛けておくこと。
+    """
+    key, source = _google_maps_api_key()
+    return jsonify({
+        'status': 'success',
+        'api_key': key,
+        'source': source,
+        'env_name': GOOGLE_MAPS_API_KEY_ENV,
+        'file_name': os.path.basename(GOOGLE_MAPS_API_KEY_FILE),
+    })
+
+
+# 場所の検索 (Map Viewer の「場所を検索」)。キーをブラウザに渡さずに済むよう、サーバーから Google に問い合わせる。
+GEOCODE_URL = 'https://maps.googleapis.com/maps/api/geocode/json'
+PLACES_TEXT_SEARCH_URL = 'https://places.googleapis.com/v1/places:searchText'
+GEOCODE_TIMEOUT_SEC = 8
+GEOCODE_MAX_RESULTS = 5
+
+
+def _http_json(url, data=None, headers=None):
+    """JSON を返す API を呼ぶ。(HTTP ステータス, JSON) を返す。通信できなければ例外。"""
+    req = urllib.request.Request(url, data=data, headers=headers or {})
+    try:
+        with urllib.request.urlopen(req, timeout=GEOCODE_TIMEOUT_SEC) as res:
+            return res.status, json.loads(res.read().decode('utf-8'))
+    except urllib.error.HTTPError as e:
+        try:
+            return e.code, json.loads(e.read().decode('utf-8'))
+        except ValueError:
+            return e.code, {}
+
+
+def _short_address(address):
+    """「日本、〒130-0013 東京都墨田区錦糸」のような住所から、国名と郵便番号を省く (表示用)。"""
+    return re.sub(r'^(日本、)?\s*(〒\d{3}-\d{4}\s*)?', '', address or '').strip()
+
+
+def _geocode(query, key):
+    """Geocoding API (住所に強い)。(候補, エラーメッセージ) を返す。"""
+    params = urllib.parse.urlencode({'address': query, 'language': 'ja', 'region': 'jp', 'key': key})
+    _, body = _http_json(f'{GEOCODE_URL}?{params}')
+    status = body.get('status')
+    if status == 'ZERO_RESULTS':
+        return [], None
+    if status != 'OK':
+        return [], f'Geocoding API: {status} {body.get("error_message", "")}'.strip()
+    return [{
+        'name': _short_address(r.get('formatted_address', '')),
+        'address': _short_address(r.get('formatted_address', '')),
+        'lat': r['geometry']['location']['lat'],
+        'lon': r['geometry']['location']['lng'],
+        'source': 'geocoding',
+        'partial': bool(r.get('partial_match')),
+    } for r in body.get('results', [])[:GEOCODE_MAX_RESULTS]], None
+
+
+def _places_text_search(query, key):
+    """Places API (New) の Text Search (施設名・駅名などに強い)。(候補, エラーメッセージ) を返す。"""
+    status, body = _http_json(
+        PLACES_TEXT_SEARCH_URL,
+        data=json.dumps({'textQuery': query, 'languageCode': 'ja', 'regionCode': 'JP',
+                         'pageSize': GEOCODE_MAX_RESULTS}).encode('utf-8'),
+        headers={'Content-Type': 'application/json', 'X-Goog-Api-Key': key,
+                 'X-Goog-FieldMask': 'places.displayName,places.formattedAddress,places.location'})
+    if status != 200:
+        message = (body.get('error') or {}).get('message', '')
+        return [], f'Places API: HTTP {status} {message}'.strip()
+    return [{
+        'name': (p.get('displayName') or {}).get('text', ''),
+        'address': _short_address(p.get('formattedAddress', '')),
+        'lat': p['location']['latitude'],
+        'lon': p['location']['longitude'],
+        'source': 'places',
+        'partial': False,
+    } for p in body.get('places', []) if p.get('location')][:GEOCODE_MAX_RESULTS], None
+
+
+@app.route('/geocode', methods=['GET'])
+def geocode():
+    """住所・地名から緯度経度の候補を返す (API)
+
+    まず Geocoding API (住所) で探し、見つからないか一部一致だけのときは Places API (施設名など) でも探す。
+    """
+    query = (request.args.get('q') or '').strip()
+    if not query:
+        return jsonify({'status': 'error', 'message': '検索する住所や地名を入力してください。'}), 400
+    if len(query) > 200:
+        return jsonify({'status': 'error', 'message': '検索する文字が長すぎます。'}), 400
+    key, _ = _google_maps_server_api_key()
+    if not key:
+        return jsonify({'status': 'error', 'message': 'Google Maps の API キーが設定されていません。'}), 400
+
+    errors = []
+    try:
+        results, error = _geocode(query, key)
+        if error:
+            errors.append(error)
+        if not results or all(r['partial'] for r in results):
+            places, error = _places_text_search(query, key)
+            if error:
+                errors.append(error)
+            # 施設名で見つかったものを先に出す (同じ場所の重複は除く)
+            merged = places + [r for r in results
+                               if all(abs(r['lat'] - p['lat']) > 1e-4 or abs(r['lon'] - p['lon']) > 1e-4 for p in places)]
+            results = merged[:GEOCODE_MAX_RESULTS]
+    except (OSError, ValueError, KeyError) as e:
+        return jsonify({'status': 'error', 'message': f'Google に問い合わせできません: {e}'}), 502
+
+    if not results and errors:
+        return jsonify({'status': 'error',
+                        'message': '場所を検索できません (' + ' / '.join(errors) + ')。'
+                                   'API キーで Geocoding API か Places API (New) を有効にしてください。'
+                                   'ブラウザ用のキーをリファラで制限している場合は、サーバー用のキーを '
+                                   f'{os.path.basename(GOOGLE_MAPS_SERVER_API_KEY_FILE)} か環境変数 '
+                                   f'{GOOGLE_MAPS_SERVER_API_KEY_ENV} に設定してください。'}), 502
+    return jsonify({'status': 'success', 'query': query, 'results': results})
+
+
+def _read_geo_origin(map_name):
+    """data/<マップ名>/init_lat_lon_alt.txt の最終行 (lat,lon,alt) を読む。
+
+    nav_common.sh の load_initial_poses と同じ読み方。不正なマップ名なら None を返す。
+    """
+    if not map_name or os.path.basename(map_name) != map_name:
+        return None
+    latlon_path = os.path.join(DATA_DIR, map_name, 'init_lat_lon_alt.txt')
+    if not _is_safe_path(latlon_path, DATA_DIR):
+        return None
+
+    if not os.path.exists(latlon_path):
+        return {'exists': False, 'valid': False,
+                'message': f'data/{map_name}/init_lat_lon_alt.txt がありません。'}
+    try:
+        with open(latlon_path, 'r', encoding='utf-8') as f:
+            lines = [line.strip() for line in f if line.strip()]
+        values = [float(v) for v in lines[-1].split(',')][:3]
+    except (OSError, IndexError, ValueError) as e:
+        return {'exists': True, 'valid': False,
+                'message': f'init_lat_lon_alt.txt を読み込めません: {e}'}
+
+    if len(values) < 2:
+        return {'exists': True, 'valid': False,
+                'message': 'init_lat_lon_alt.txt に緯度と経度がありません。'}
+    lat, lon = values[0], values[1]
+    alt = values[2] if len(values) > 2 else 0.0
+    # マッピング時の UTM ゾーンが不正だと inf/nan が書かれることがある (hokuyo_slam.bash 参照)
+    in_range = all(math.isfinite(v) for v in (lat, lon, alt)) \
+        and -90.0 <= lat <= 90.0 and -180.0 <= lon <= 180.0
+    is_default = all(abs(a - b) < 1e-9 for a, b in zip((lat, lon, alt), DEFAULT_LAT_LON_ALT))
+
+    result = {'exists': True, 'lat': lat, 'lon': lon, 'alt': alt,
+              'is_default': is_default, 'valid': in_range and not is_default}
+    if not in_range:
+        result['message'] = f'init_lat_lon_alt.txt の値が不正です: {lines[-1]}'
+    elif is_default:
+        result['message'] = ('原点が既定値 (35.0,135.0,40.0) のままです。GNSS を使わずに作った地図のため、'
+                             '実際の場所は分かりません。')
+    return result
+
+
+@app.route('/geo_origin/<map_name>', methods=['GET'])
+def get_geo_origin(map_name):
+    """地図座標の原点の緯度経度高度を返す (API)"""
+    origin = _read_geo_origin(map_name)
+    if origin is None:
+        return jsonify({'status': 'error', 'message': '不正なマップ名です。'}), 400
+    return jsonify({'status': 'success', **origin})
+
+
+@app.route('/geo_origins', methods=['GET'])
+def list_geo_origins():
+    """有効な原点 (GNSS で作った地図の init_lat_lon_alt.txt) を持つマップの一覧を返す (API)
+
+    事前地図を読まずに Google 背景を表示するとき、同じ現場の原点を選べるようにするため。
+    """
+    origins = []
+    try:
+        names = sorted(os.listdir(DATA_DIR))
+    except OSError:
+        names = []
+    for name in names:
+        if not os.path.isdir(os.path.join(DATA_DIR, name)):
+            continue
+        origin = _read_geo_origin(name)
+        if origin and origin.get('valid'):
+            origins.append({'map_name': name, 'lat': origin['lat'],
+                            'lon': origin['lon'], 'alt': origin['alt']})
+    return jsonify({'status': 'success', 'origins': origins})
+
+
+_MAP_NAME_PATTERN = re.compile(r'^[A-Za-z0-9_.-]+$')
+# ブラウザから受け取る点群の上限 (点数)。Map Viewer 側でも同じ上限で止める。
+MAX_UPLOADED_POINTS = 8_000_000
+
+
+@app.route('/create_map_from_points', methods=['POST'])
+def create_map_from_points():
+    """Map Viewer で範囲を選んで作った点群から、地図ファイル一式を保存する (API)
+
+    本文: 点群 (リトルエンディアン。point_format が xyz なら float32 x,y,z、xyzrgb なら続けて uint32 の色)。座標は範囲の中心を原点にした
+          fix2xyz と同じ地図座標 [m]。
+    クエリ meta: JSON 文字列
+        map_name, overwrite, origin {lat, lon, alt}, bounds {min_x, min_y, max_x, max_y},
+        pgm {resolution, obstacle_min, obstacle_max, ground_window, point_spacing, inflate (省略時は間隔の半分)},
+        point_format: 'xyz' (1 点 12 バイト) / 'xyzrgb' (1 点 16 バイト、色 0x00RRGGBB 付き)
+        init_pose {x, y, yaw}
+    """
+    try:
+        meta = json.loads(request.args.get('meta', ''))
+    except ValueError:
+        return jsonify({'status': 'error', 'message': 'meta の JSON を読めません。'}), 400
+    if map_from_points is None:
+        return jsonify({'status': 'error',
+                        'message': '地図の書き出しに必要な Python パッケージ (numpy, Pillow) がありません。'}), 500
+
+    map_name = str(meta.get('map_name', '')).strip()
+    if not _MAP_NAME_PATTERN.match(map_name):
+        return jsonify({'status': 'error',
+                        'message': 'マップ名は半角英数字と _ . - だけで指定してください。'}), 400
+
+    targets = [os.path.join(MAP_DIR, f'{map_name}{ext}') for ext in ('.pcd', '.pgm', '.yaml')]
+    targets.append(os.path.join(DATA_DIR, map_name))
+    if not all(_is_safe_path(p, HOKUYO_NAV2_PKG_PATH) for p in targets):
+        return jsonify({'status': 'error', 'message': '不正なマップ名です。'}), 400
+    existing = [os.path.relpath(p, HOKUYO_NAV2_PKG_PATH) for p in targets if os.path.exists(p)]
+    if existing and not meta.get('overwrite'):
+        return jsonify({'status': 'exists',
+                        'message': f'同じ名前の地図があります: {", ".join(existing)}。'
+                                   '上書きする場合は「同じ名前の地図があれば上書きする」にチェックしてください。'}), 409
+
+    try:
+        origin = meta['origin']
+        lat, lon, alt = float(origin['lat']), float(origin['lon']), float(origin['alt'])
+        b = meta['bounds']
+        bounds = (float(b['min_x']), float(b['min_y']), float(b['max_x']), float(b['max_y']))
+        p = meta['pgm']
+        point_spacing = float(p['point_spacing'])
+        pgm_params = {
+            'resolution': float(p['resolution']),
+            'obstacle_min': float(p['obstacle_min']),
+            'obstacle_max': float(p['obstacle_max']),
+            'ground_window': float(p['ground_window']),
+            # 点と点のすき間で壁が途切れないよう、点の間隔の半分だけ障害物を太らせる
+            'inflate': float(p.get('inflate', point_spacing / 2.0)),
+        }
+        pose = meta.get('init_pose') or {}
+        init_pose = (float(pose.get('x', 0.0)), float(pose.get('y', 0.0)), float(pose.get('yaw', 0.0)))
+    except (KeyError, TypeError, ValueError) as e:
+        return jsonify({'status': 'error', 'message': f'meta の値が不正です: {e}'}), 400
+    values = [lat, lon, alt, *bounds, point_spacing, *pgm_params.values(), *init_pose]
+    if not all(math.isfinite(v) for v in values) or not (-90 <= lat <= 90 and -180 <= lon <= 180):
+        return jsonify({'status': 'error', 'message': '緯度経度や範囲の値が不正です。'}), 400
+    if pgm_params['resolution'] <= 0 or pgm_params['obstacle_max'] <= pgm_params['obstacle_min']:
+        return jsonify({'status': 'error', 'message': 'PGM の解像度か障害物の高さの指定が不正です。'}), 400
+
+    point_format = str(meta.get('point_format') or 'xyz')
+    record_bytes = map_from_points.POINT_RECORD_BYTES.get(point_format)
+    if record_bytes is None:
+        return jsonify({'status': 'error', 'message': f'point_format {point_format} には対応していません。'}), 400
+    body = request.get_data(cache=False)
+    if len(body) == 0 or len(body) % record_bytes != 0:
+        return jsonify({'status': 'error', 'message': '点群データの長さが不正です (x,y,z の float32 と色の並び)。'}), 400
+    points, colors = map_from_points.points_from_bytes(body, point_format)
+    if points.shape[0] > MAX_UPLOADED_POINTS:
+        return jsonify({'status': 'error',
+                        'message': f'点が多すぎます ({points.shape[0]} 点、上限 {MAX_UPLOADED_POINTS} 点)。'}), 400
+
+    try:
+        result = map_from_points.save_map_files(MAP_DIR, DATA_DIR, map_name, points, bounds,
+                                                (lat, lon, alt), pgm_params, init_pose,
+                                                source={'type': str(meta.get('source_type') or 'points'),
+                                                        'spacing': point_spacing},
+                                                colors=colors)
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except OSError as e:
+        return jsonify({'status': 'error', 'message': f'地図ファイルを保存できません: {e}'}), 500
+
+    return jsonify({
+        'status': 'success',
+        'message': f'地図「{map_name}」を保存しました。',
+        'map_name': map_name,
+        'points': int(points.shape[0]),
+        'pgm': result['pgm'],
+        'files': [os.path.relpath(f, HOKUYO_NAV2_PKG_PATH) for f in result['files']],
+    })
+
+
+def _map_edit_request(map_name):
+    """地図のパラメータ調整 API の共通チェック。問題があれば (レスポンス, ステータス) を返す。"""
+    if map_from_points is None:
+        return jsonify({'status': 'error',
+                        'message': '地図の作り直しに必要な Python パッケージ (numpy, Pillow) がありません。'}), 500
+    if not _MAP_NAME_PATTERN.match(map_name or '') \
+            or not _is_safe_path(os.path.join(MAP_DIR, f'{map_name}.pcd'), HOKUYO_NAV2_PKG_PATH) \
+            or not _is_safe_path(os.path.join(DATA_DIR, map_name), HOKUYO_NAV2_PKG_PATH):
+        return jsonify({'status': 'error', 'message': '不正なマップ名です。'}), 400
+    return None
+
+
+def _map_edit_error(error):
+    status = getattr(error, 'status', 400)
+    return jsonify({'status': 'error', 'message': str(error)}), status
+
+
+def _map_edit_meta():
+    """クエリ meta (JSON) を読む。本文を点群や画素に使うため、設定はクエリで受け取る。"""
+    try:
+        meta = json.loads(request.args.get('meta', '') or '{}')
+    except ValueError:
+        raise map_from_points.MapEditError('meta の JSON を読めません。')
+    if not isinstance(meta, dict):
+        raise map_from_points.MapEditError('meta の形式が不正です。')
+    return meta
+
+
+@app.route('/map_params/<map_name>', methods=['GET'])
+def get_map_params(map_name):
+    """地図を作ったときの設定 (無ければ既定値) と元の点群の情報を返す (API)"""
+    problem = _map_edit_request(map_name)
+    if problem:
+        return problem
+    try:
+        return jsonify({'status': 'success',
+                        **map_from_points.describe_map_params(MAP_DIR, DATA_DIR, map_name)})
+    except ValueError as e:
+        return _map_edit_error(e)
+
+
+@app.route('/map_params/<map_name>/preview', methods=['POST'])
+def preview_map_params(map_name):
+    """設定を変えて作り直した PCD か PGM を返す (保存はしない) (API)
+
+    クエリ what: 'pcd' (binary PCD) / 'pgm' (P5 の PGM)
+    クエリ meta: {pcd: {spacing, crop, z_min, z_max}, pgm: {...}, use_pending_source}
+    PGM のときは YAML の内容と統計を X-Map-Info ヘッダー (URL エンコードした JSON) で返す。
+    """
+    problem = _map_edit_request(map_name)
+    if problem:
+        return problem
+    what = request.args.get('what', 'pgm')
+    if what not in ('pcd', 'pgm'):
+        return jsonify({'status': 'error', 'message': 'what は pcd か pgm です。'}), 400
+    try:
+        meta = _map_edit_meta()
+        built = map_from_points.build_edited_map(
+            MAP_DIR, DATA_DIR, map_name, meta.get('pcd'), meta.get('pgm'),
+            use_pending=bool(meta.get('use_pending_source')), need_pgm=(what == 'pgm'))
+    except (ValueError, OSError) as e:
+        return _map_edit_error(e)
+
+    info = {
+        'points': int(built['points'].shape[0]),
+        'source_points': built['source_count'],
+        'changes_points': built['changes_points'],
+        'extra_fields': built['extra_fields'],
+        'pcd': built['pcd_params'],
+        'pgm': built['pgm_params'],
+    }
+    if what == 'pcd':
+        body = map_from_points.pcd_binary_bytes(built['points'], built['colors'])
+    else:
+        pgm = built['pgm']
+        height, width = pgm.shape
+        body = f'P5\n{width} {height}\n255\n'.encode('ascii') + pgm.tobytes()
+        info.update({'map_info': built['map_info'], 'pgm_stats': built['pgm_stats']})
+    response = app.response_class(body, mimetype='application/octet-stream')
+    response.headers['X-Map-Info'] = urllib.parse.quote(json.dumps(info))
+    response.headers['Cache-Control'] = 'no-store'
+    return response
+
+
+@app.route('/map_params/<map_name>/save', methods=['POST'])
+def save_map_params(map_name):
+    """設定を変えて作り直した PCD / PGM / YAML と設定を保存する (API)
+
+    クエリ meta: {save_as, overwrite, pcd, pgm, use_pending_source}
+    本文 (任意): ブラウザでブラシ編集した PGM の画素 (PGM ファイルと同じ並び)
+    """
+    problem = _map_edit_request(map_name)
+    if problem:
+        return problem
+    try:
+        meta = _map_edit_meta()
+        save_as = str(meta.get('save_as') or map_name).strip()
+        if save_as.lower().endswith('.pgm') or save_as.lower().endswith('.pcd'):
+            save_as = save_as[:-4]
+        problem = _map_edit_request(save_as)
+        if problem:
+            return jsonify({'status': 'error',
+                            'message': '保存するマップ名は半角英数字と _ . - だけで指定してください。'}), 400
+        pixels = request.get_data(cache=False)
+        result = map_from_points.save_edited_map(
+            MAP_DIR, DATA_DIR, map_name, save_as, meta.get('pcd'), meta.get('pgm'),
+            use_pending=bool(meta.get('use_pending_source')),
+            pgm_pixels=pixels if pixels else None,
+            overwrite=bool(meta.get('overwrite')))
+    except (ValueError, OSError) as e:
+        return _map_edit_error(e)
+
+    message = f'地図「{save_as}」を保存しました (点群 {result["points"]:,} 点、' \
+              f'PGM {result["pgm"]["width"]}×{result["pgm"]["height"]} 画素)。'
+    if not result['pcd_written']:
+        message += ' 点群は変わらないため PCD はそのままです。'
+    if result['extra_fields_dropped']:
+        message += f' PCD は x y z だけで書き出したため、{" ".join(result["extra_fields_dropped"])} の項目は元の点群にだけ残っています。'
+    return jsonify({
+        'status': 'success',
+        'message': message,
+        'map_name': save_as,
+        'points': result['points'],
+        'pgm': result['pgm'],
+        'yaml': result['yaml'],
+        'params': result['params'],
+        'files': [os.path.relpath(f, HOKUYO_NAV2_PKG_PATH) for f in result['files']],
+    })
+
+
+@app.route('/map_params/<map_name>/source', methods=['POST'])
+def upload_map_source(map_name):
+    """Google から取り直した点群を、保存するまでの元の点群として置いておく (API)
+
+    クエリ meta: {type, spacing, region {min_x, min_y, max_x, max_y}, point_format ('xyz' / 'xyzrgb')}
+    本文: 点群 (リトルエンディアン。float32 x,y,z、xyzrgb なら続けて uint32 の色 0x00RRGGBB。この地図の座標)
+    """
+    problem = _map_edit_request(map_name)
+    if problem:
+        return problem
+    if not os.path.isfile(os.path.join(MAP_DIR, f'{map_name}.pcd')):
+        return jsonify({'status': 'error', 'message': f'map/{map_name}.pcd がありません。'}), 404
+    try:
+        meta = _map_edit_meta()
+        spacing = float(meta.get('spacing'))
+        region = map_from_points._bounds_dict(map_from_points._bounds_tuple(meta.get('region')))
+        if not (math.isfinite(spacing) and spacing > 0):
+            raise map_from_points.MapEditError('点の間隔が不正です。')
+    except (KeyError, TypeError, ValueError) as e:
+        return _map_edit_error(e)
+    point_format = str(meta.get('point_format') or 'xyz')
+    record_bytes = map_from_points.POINT_RECORD_BYTES.get(point_format)
+    if record_bytes is None:
+        return jsonify({'status': 'error', 'message': f'point_format {point_format} には対応していません。'}), 400
+    body = request.get_data(cache=False)
+    if len(body) == 0 or len(body) % record_bytes != 0:
+        return jsonify({'status': 'error', 'message': '点群データの長さが不正です (x,y,z の float32 と色の並び)。'}), 400
+    points, colors = map_from_points.points_from_bytes(body, point_format)
+    if points.shape[0] > MAX_UPLOADED_POINTS:
+        return jsonify({'status': 'error',
+                        'message': f'点が多すぎます ({points.shape[0]} 点、上限 {MAX_UPLOADED_POINTS} 点)。'}), 400
+    try:
+        info = map_from_points.save_pending_source(
+            DATA_DIR, map_name, points,
+            {'type': str(meta.get('type') or 'google_3d_tiles'), 'spacing': spacing, 'region': region},
+            colors=colors)
+    except OSError as e:
+        return jsonify({'status': 'error', 'message': f'点群を保存できません: {e}'}), 500
+    return jsonify({'status': 'success', 'source': info})
+
+
 @app.route('/save_pgm', methods=['POST'])
 def save_pgm():
     """3Dビューアで編集した2Dマップ (PGM) を保存する (API)
@@ -2107,7 +2680,19 @@ def trigger_script():
         return "Unknown command", 400
 
 if __name__ == '__main__':
-    print(f"Flask Server starting at http://{SERVER_HOST}:{SERVER_PORT}")
-    print(f"WebSocket Proxy server started at ws://{SERVER_HOST}:{SERVER_PORT}/ws")
-    server = pywsgi.WSGIServer((SERVER_HOST, SERVER_PORT), app, handler_class=WebSocketHandler)
+    # 証明書と秘密鍵を環境変数で指定すると HTTPS で起動する。
+    # ブラウザの位置情報 (Map Viewer の「デバイスの現在地を原点にする」) は、
+    # localhost 以外では HTTPS のページでしか使えないため。
+    ssl_cert = os.environ.get('HOKUYO_GUI_SSL_CERT', '').strip()
+    ssl_key = os.environ.get('HOKUYO_GUI_SSL_KEY', '').strip()
+    ssl_args = {}
+    if ssl_cert or ssl_key:
+        if not (os.path.isfile(ssl_cert) and os.path.isfile(ssl_key)):
+            sys.exit('Error: HOKUYO_GUI_SSL_CERT と HOKUYO_GUI_SSL_KEY には、'
+                     f'存在する証明書と秘密鍵のファイルを指定してください (cert={ssl_cert!r}, key={ssl_key!r})')
+        ssl_args = {'certfile': ssl_cert, 'keyfile': ssl_key}
+    scheme = 'https' if ssl_args else 'http'
+    print(f"Flask Server starting at {scheme}://{SERVER_HOST}:{SERVER_PORT}")
+    print(f"WebSocket Proxy server started at {'wss' if ssl_args else 'ws'}://{SERVER_HOST}:{SERVER_PORT}/ws")
+    server = pywsgi.WSGIServer((SERVER_HOST, SERVER_PORT), app, handler_class=WebSocketHandler, **ssl_args)
     server.serve_forever()

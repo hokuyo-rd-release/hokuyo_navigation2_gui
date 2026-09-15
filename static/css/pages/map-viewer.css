@@ -48,6 +48,8 @@
     color: #fff;
     font-size: var(--fs-xl);
     transition: opacity var(--transition-base);
+    /* 地図をロードせずにウェイポイントを置くとき、クリックを邪魔しない */
+    pointer-events: none;
 }
 
 #info {
@@ -472,4 +474,96 @@
     flex-direction: column;
     align-items: stretch;
     gap: 2px;
+}
+
+/* ==========================================================================
+   Google 背景 (衛星写真 / 3D Tiles)
+   ========================================================================== */
+/* .hud-note は後ろで定義されていて色が負けるので、状態の色をここで上書きする */
+#controls .hud-note.hud-error   { color: var(--viewer-danger); }
+#controls .hud-note.hud-warning { color: var(--viewer-warning); }
+
+#google-bg-origin-details summary {
+    color: var(--viewer-text-muted);
+    cursor: pointer;
+}
+
+#google-bg-origin-details[open] {
+    display: flex;
+    flex-direction: column;
+    gap: var(--space-1);
+}
+
+/* 利用規約で表示が必要な Google の表記と出典。操作パネルと凡例に重ならない下中央に置く。 */
+#google-attribution {
+    bottom: var(--space-1);
+    left: 50%;
+    max-width: 50vw;
+    transform: translateX(-50%);
+    font-size: var(--fs-xs);
+    text-align: center;
+    pointer-events: none;
+}
+
+/* 凡例の補足 (到着判定の範囲などの見方) */
+.legend-note {
+    color: var(--text-muted, #ccc);
+    font-size: 11px;
+}
+
+/* ウェイポイントの番号・到着の閾値・停止秒数のラベル (3D ビュー上に重ねる) */
+.waypoint-guide-label {
+    padding: 1px 4px;
+    border-radius: 3px;
+    background: rgba(0, 0, 0, 0.6);
+    color: #fff;
+    font-size: 11px;
+    line-height: 1.25;
+    white-space: nowrap;
+    text-shadow: 1px 1px 1px #000;
+    pointer-events: none;
+    border-left: 3px solid var(--wp-default, #00ffff);
+}
+.waypoint-guide-label--normal { border-left-color: var(--wp-normal, #00ff00); }
+.waypoint-guide-label--slow   { border-left-color: var(--wp-slow, #ffff00); }
+.waypoint-guide-label--stop   { border-left-color: var(--wp-stop, #ff0000); font-weight: bold; }
+
+/* ウェイポイントを囲んでまとめて削除するときの枠 */
+.screen-rect-selector {
+    position: fixed;
+    z-index: 50;
+    border: 2px dashed #ff8c00;
+    background: rgba(255, 140, 0, 0.12);
+    pointer-events: none;
+}
+
+/* 場所の検索 */
+#controls .geo-search {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    margin-bottom: var(--space-2, 8px);
+}
+#geo-search-results {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+#controls .geo-search-result {
+    text-align: left;
+    font-size: 11px;
+    white-space: normal;
+}
+#controls .geo-search-result.is-current {
+    outline: 2px solid #ff2d2d;
+}
+.search-marker-label {
+    padding: 1px 6px;
+    border-radius: 3px;
+    background: rgba(180, 0, 0, 0.85);
+    color: #fff;
+    font-size: 12px;
+    font-weight: bold;
+    white-space: nowrap;
+    pointer-events: none;
 }

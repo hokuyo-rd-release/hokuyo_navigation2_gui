@@ -10,7 +10,10 @@
       { 
         "imports": {
             "three": "{{ url_for('static', filename='js/three/three.js/build/three.module.js') }}",
-            "three/addons/": "{{ url_for('static', filename='js/three/three.js/examples/jsm/') }}" 
+            "three/addons/": "{{ url_for('static', filename='js/three/three.js/examples/jsm/') }}",
+            "three/examples/jsm/": "{{ url_for('static', filename='js/three/three.js/examples/jsm/') }}",
+            "3d-tiles-renderer": "{{ url_for('static', filename='js/tiles/3d-tiles-renderer/src/index.js') }}",
+            "3d-tiles-renderer/plugins": "{{ url_for('static', filename='js/tiles/3d-tiles-renderer/src/plugins/index.js') }}"
         }
       }
     </script>
@@ -71,6 +74,7 @@
     <div id="loading-message">マップ名を指定してロードしてください。</div>
     <div id="info" class="viewer-hud"></div>
     <div id="grid-info" class="viewer-hud">Grid: 10m</div>
+    <div id="google-attribution" class="viewer-hud" hidden></div>
     <div id="waypoint-info">
         <h4>選択中のウェイポイント</h4>
         <fieldset>
@@ -118,6 +122,91 @@
             </div>
         </fieldset>
 
+        <fieldset id="google-bg-fieldset">
+            <legend>Google 背景 (航空写真 / 3D)</legend>
+            <div class="control-group">
+                <label for="google-bg-mode">表示:
+                    <select id="google-bg-mode">
+                        <option value="none">なし</option>
+                        <option value="2d">2D 衛星写真</option>
+                        <option value="3d">3D (Google Earth 相当)</option>
+                    </select>
+                </label>
+                <div class="geo-search">
+                    <label for="geo-search-input">場所を検索 (住所・地名・緯度経度・Google マップの URL):</label>
+                    <input type="search" id="geo-search-input" placeholder="例: 墨田区錦糸町 / 35.6986, 139.8176">
+                    <button id="geo-search-button">検索して移動</button>
+                    <div id="geo-search-results"></div>
+                    <div id="geo-search-status" class="hud-note"></div>
+                </div>
+                <p id="google-bg-origin" class="hud-note">原点: マップをロードするか、デバイスの現在地・手入力で指定します。</p>
+                <button id="geo-origin-device">デバイスの現在地を原点にする</button>
+                <label for="google-bg-height">高さ補正 [m]:
+                    <input type="number" id="google-bg-height" step="0.1" value="0" disabled>
+                </label>
+                <button id="google-bg-fit-ground" disabled>画面中心の地面に高さを合わせる</button>
+                <label id="google-bg-map-on-top-label" hidden>
+                    <input type="checkbox" id="google-bg-map-on-top" checked>
+                    点群・2D地図・ウェイポイントを 3D Tiles の手前に表示する
+                </label>
+                <label for="google-bg-opacity" id="google-bg-opacity-label" hidden>透過度:
+                    <input type="range" id="google-bg-opacity" min="0" max="1" step="0.1" value="1" class="opacity-slider">
+                </label>
+                <details id="google-bg-origin-details">
+                    <summary>原点を手入力する</summary>
+                    <p class="hud-note">
+                        マップを読まずに背景だけ表示するときや、GNSS を使わずに作った地図 (原点が分からない) のときに、
+                        緯度経度と方位を入力して合わせます。
+                        入力値はこのブラウザにだけ保存され、自律走行の設定 (init_lat_lon_alt.txt) は変わりません。
+                    </p>
+                    <label for="geo-origin-preset">既存マップの原点を入力欄に入れる:
+                        <select id="geo-origin-preset">
+                            <option value="">-- 選択 --</option>
+                        </select>
+                    </label>
+                    <label>緯度 [deg]: <input type="number" id="geo-origin-lat" step="0.000001"></label>
+                    <label>経度 [deg]: <input type="number" id="geo-origin-lon" step="0.000001"></label>
+                    <label>高度 [m]: <input type="number" id="geo-origin-alt" step="0.1"></label>
+                    <label>方位補正 [deg]: <input type="number" id="geo-origin-yaw" step="0.5" value="0"></label>
+                    <button id="geo-origin-apply">この原点を使う</button>
+                    <button id="geo-origin-reset">ファイルの原点に戻す</button>
+                </details>
+                <div id="google-bg-status" class="hud-note"></div>
+            </div>
+        </fieldset>
+
+        <fieldset id="google-map-build-fieldset" hidden>
+            <legend>範囲から地図を作る (Google 3D)</legend>
+            <div class="control-group">
+                <p class="hud-note">
+                    Google 背景の上で範囲を選ぶと、Google 3D Tiles のメッシュから PCD と PGM を作って保存します。
+                    範囲の中心 (緯度・経度・地面の高度) が地図の原点 (基準点) になり、
+                    PGM は GNSS モードの自律走行 (fix2xyz) と同じ UTM の座標で作ります。
+                </p>
+                <p class="hud-note hud-warning">
+                    Google Maps Platform の利用規約は、コンテンツの取り出し・保存・それをもとにしたデータの作成を
+                    禁じている可能性があります。使うかどうかは規約を確認のうえ判断してください。
+                </p>
+                <label for="gmb-name">保存するマップ名 (半角英数字と _ . -):
+                    <input type="text" id="gmb-name" placeholder="例: google_site01">
+                </label>
+                <button id="gmb-select">範囲をドラッグで選択</button>
+                <p id="gmb-region" class="hud-note">範囲: 未選択</p>
+                <details>
+                    <summary>作成の設定</summary>
+                    <label>点群の点の間隔 [m]: <input type="number" id="gmb-spacing" min="0.05" step="0.05" value="0.2"></label>
+                    <label>PGM の解像度 [m/画素]: <input type="number" id="gmb-resolution" min="0.01" step="0.01" value="0.05"></label>
+                    <label>障害物とみなす地面からの高さ (下限) [m]: <input type="number" id="gmb-obstacle-min" step="0.1" value="0.5"></label>
+                    <label>障害物とみなす地面からの高さ (上限) [m]: <input type="number" id="gmb-obstacle-max" step="0.1" value="2.0"></label>
+                    <label>地面の高さを探す範囲 [m]: <input type="number" id="gmb-ground-window" min="1" step="1" value="10"></label>
+                </details>
+                <label><input type="checkbox" id="gmb-overwrite"> 同じ名前の地図があれば上書きする</label>
+                <button id="gmb-create" disabled>PCD・PGM を作成して保存</button>
+                <button id="gmb-cancel" hidden>作成を中止</button>
+                <div id="gmb-status" class="hud-note"></div>
+            </div>
+        </fieldset>
+
         <fieldset>
             <legend>Visibility</legend>
             <div id="dynamic-toggles">
@@ -130,10 +219,32 @@
             <div class="control-group">
                 <div id="total-distance-display">Total Distance: 0.00 m</div>
                 <label><input type="checkbox" id="show-distance-labels" checked> 距離ラベル表示</label>
+                <label><input type="checkbox" id="show-waypoint-tolerance" checked> 到着判定の範囲 (距離・角度・通過線) を表示</label>
+                <label><input type="checkbox" id="show-waypoint-attr-labels" checked> 番号・到着の閾値・停止秒数のラベルを表示</label>
                 <label><input type="checkbox" id="auto-orient-waypoints"> 次のWPを指す</label>
                 <button id="add-waypoint-end-button">末尾に追加</button>
                 <button id="add-waypoint-start-button">先頭に追加</button>
                 <button id="add-waypoint-after-button" disabled>選択中の後に追加</button>
+                <p class="hud-note">Shift (か Ctrl) を押しながらクリックすると複数選べます。選んだどれかをドラッグすると一緒に動きます。</p>
+                <button id="wp-box-select-button">範囲を囲んで選択</button>
+                <div id="wp-multi-status" class="hud-note">複数選択: なし</div>
+                <button id="wp-multi-delete-button" disabled>選択中をまとめて削除</button>
+                <button id="wp-multi-clear-button" disabled>選択を解除</button>
+                <button id="wp-box-delete-button">範囲を囲んでまとめて削除</button>
+                <label for="wp-freehand-interval">線を引いて並べる間隔 [m]:
+                    <input type="number" id="wp-freehand-interval" min="0.2" step="0.5" value="2.0">
+                </label>
+                <label for="wp-freehand-position">線を引いて追加する位置:
+                    <select id="wp-freehand-position">
+                        <option value="end">末尾</option>
+                        <option value="start">先頭</option>
+                        <option value="after">選択中の後</option>
+                    </select>
+                </label>
+                <button id="wp-freehand-button">フリーハンドで線を引いて追加</button>
+                <label for="wp-save-name">保存するウェイポイント名 (waypoints/&lt;名前&gt;.json):
+                    <input type="text" id="wp-save-name" placeholder="例: route01">
+                </label>
                 <button id="save-waypoints-button">ウェイポイントを保存</button>
             </div>
         </fieldset>
@@ -154,8 +265,70 @@
                 <label>Y [m]: <input type="number" id="init-pose-y" step="0.1" value="0"></label>
                 <label>Yaw [deg]: <input type="number" id="init-pose-yaw" step="1" value="0"></label>
                 <button id="reload-initial-pose-button">保存済みを読み込み</button>
+                <label><input type="checkbox" id="init-pose-rebase" checked>
+                    保存するとき、地図の原点を初期位置に合わせる (初期位置が (0, 0) になるよう、地図・ウェイポイント・基準点の座標をずらす)</label>
                 <button id="save-initial-pose-button">初期位置を保存</button>
                 <div id="init-pose-status" class="hud-note"></div>
+            </div>
+        </fieldset>
+
+        <fieldset id="map-tune-fieldset" hidden>
+            <legend>地図のパラメータ調整 (PCD / PGM)</legend>
+            <div class="control-group">
+                <p class="hud-note">
+                    ロード中の点群の元になった点群から、設定を変えて PCD と PGM を作り直します。
+                    元の点群は残すので、何度でもやり直せます。「プレビュー」で確認してから保存してください。
+                </p>
+                <p id="mt-source" class="hud-note"></p>
+                <button id="mt-use-pending" hidden>前回取り直した点群を使う</button>
+                <details open>
+                    <summary>点群 (PCD)</summary>
+                    <label>点の間隔 [m] (0 = 間引かない): <input type="number" id="mt-spacing" min="0" step="0.05"></label>
+                    <label>残す高さ 下限 z [m] (空欄 = 制限なし): <input type="number" id="mt-z-min" step="0.1"></label>
+                    <label>残す高さ 上限 z [m] (空欄 = 制限なし): <input type="number" id="mt-z-max" step="0.1"></label>
+                    <p id="mt-crop" class="hud-note">残す範囲: 全体</p>
+                    <button id="mt-crop-select">残す範囲をドラッグで選択</button>
+                    <button id="mt-crop-clear">範囲を全体に戻す</button>
+                </details>
+                <details open>
+                    <summary>2Dマップ (PGM)</summary>
+                    <label>解像度 [m/画素]: <input type="number" id="mt-resolution" min="0.01" step="0.01"></label>
+                    <label for="mt-height-reference">障害物とみなす高さの基準:
+                        <select id="mt-height-reference">
+                            <option value="pcd_z">PCD の z 座標で指定</option>
+                            <option value="ground">場所ごとの地面からの高さで指定</option>
+                        </select>
+                    </label>
+                    <p id="mt-height-help" class="hud-note"></p>
+                    <p id="mt-z-stats" class="hud-note"></p>
+                    <label><span id="mt-obstacle-min-label">障害物とみなす z の範囲 (下限) [m]:</span> <input type="number" id="mt-obstacle-min" step="0.1"></label>
+                    <label><span id="mt-obstacle-max-label">障害物とみなす z の範囲 (上限) [m]:</span> <input type="number" id="mt-obstacle-max" step="0.1"></label>
+                    <label id="mt-show-z-range-label"><input type="checkbox" id="mt-show-z-range" checked> z の範囲を 3D 上に面で表示</label>
+                    <label id="mt-ground-window-label">地面の高さを探す範囲 [m]: <input type="number" id="mt-ground-window" min="1" step="1"></label>
+                    <label>障害物を太らせる幅 [m]: <input type="number" id="mt-inflate" min="0" step="0.05"></label>
+                </details>
+                <details id="mt-refetch-details" hidden>
+                    <summary>Google 3D Tiles から点群を取り直す</summary>
+                    <p class="hud-note">
+                        点の間隔を元より細かくしたいときや、元の範囲の外まで広げたいときに使います。
+                        上の「点の間隔」と「残す範囲」(未選択なら元の範囲) で取り直します。
+                        原点 (基準点) は変わりません。保存するまで、今の地図ファイルは変わりません。
+                    </p>
+                    <p class="hud-note hud-warning">
+                        3D Tiles の読み込み料金がかかります。Google Maps Platform の利用規約は、
+                        コンテンツの取り出し・保存を禁じている可能性があります。
+                    </p>
+                    <button id="mt-refetch">点群を取り直す</button>
+                    <button id="mt-refetch-cancel" hidden>取り直しを中止</button>
+                </details>
+                <button id="mt-preview">プレビュー</button>
+                <button id="mt-revert">保存済みの状態に戻す</button>
+                <label for="mt-save-name">保存するマップ名:
+                    <input type="text" id="mt-save-name" placeholder="マップ名">
+                </label>
+                <label><input type="checkbox" id="mt-overwrite"> 別名で保存するとき、同じ名前の地図があれば上書きする</label>
+                <button id="mt-save">PCD・PGM を保存</button>
+                <div id="mt-status" class="hud-note"></div>
             </div>
         </fieldset>
 
@@ -207,6 +380,11 @@
         import { CSS2DRenderer, CSS2DObject } from 'three/addons/renderers/CSS2DRenderer.js';
         import { DragControls } from 'three/addons/controls/DragControls.js';
         import * as BufferGeometryUtils from 'three/addons/utils/BufferGeometryUtils.js';
+        import { MapGeoFrame } from "{{ url_for('static', filename='js/viewer/geo_frame.js') }}";
+        import { GoogleBackground, DEFAULT_HEIGHT_OFFSET } from "{{ url_for('static', filename='js/viewer/google_background.js') }}";
+        import { extractGoogleMeshPoints, packPointsWithColors, MAX_EXTRACTED_POINTS } from "{{ url_for('static', filename='js/viewer/google_map_builder.js') }}";
+        import { RegionSelector } from "{{ url_for('static', filename='js/viewer/region_selector.js') }}";
+        import { ScreenRectSelector, FreehandStroke, resamplePolyline } from "{{ url_for('static', filename='js/viewer/waypoint_tools.js') }}";
 
         document.addEventListener('DOMContentLoaded', (event) => {
             const legendContainer = document.createElement('div');
@@ -226,6 +404,10 @@
                     <div class="legend-row">
                         <span class="legend-swatch legend-swatch--default"></span> Default
                     </div>
+                    <div class="legend-row legend-note">円: 到着と判定する距離 (xy_tolerance)</div>
+                    <div class="legend-row legend-note">扇形: 到着と判定する向き (yaw_tolerance)</div>
+                    <div class="legend-row legend-note">破線: 越えると通過扱いになる線</div>
+                    <div class="legend-row legend-note">赤い柱: 停止秒数 (高さ ${STOP_PILLAR_METERS_PER_SECOND} m/秒)</div>
                 </div>
             `;
             document.body.appendChild(legendContainer);
@@ -260,6 +442,12 @@
         const PGM_UNKNOWN = 205;   // 未知 (グレー)
 
         let waypoints = []; 
+        // ウェイポイントの到着判定の範囲・停止秒数などの表示 (updateWaypointGuides)
+        let waypointGuidesGroup = null;
+        let waypointGuidesDirty = false;
+        // 停止秒数を柱の高さで見せるときの 1 秒あたりの高さ [m] と、柱の高さの上限 [m]
+        const STOP_PILLAR_METERS_PER_SECOND = 0.2;
+        const STOP_PILLAR_MAX_HEIGHT = 12;
         let mapData = null; 
         // 2Dマップ(PGM)の編集状態。PGMをロードすると作られる。
         let pgmEdit = null;
@@ -294,6 +482,37 @@
         let activeGrid = null;
         const gridInfoDiv = document.getElementById('grid-info');
         let groundPlane; // 地面判定用の透明な平面
+
+        // Google 背景 (衛星写真 / 3D Tiles)。原点 (緯度経度) が決まったマップの座標系で重ねる。
+        let googleBackground = null;
+        let geoFrame = null;
+        let geoOriginMapName = null;
+        // 原点の出どころ: 'file' (init_lat_lon_alt.txt) / 'manual' (手入力) / 'device' (デバイスの現在地)
+        let geoOriginSource = null;
+        let geoOriginAccuracy = null;
+        // API キーの取得が終わるまで原点の読み込みを待つための Promise
+        let googleBackgroundReady = null;
+        // 範囲から地図を作る機能
+        let regionSelector = null;
+        let mapBuildRunning = false;
+        let mapBuildCancelled = false;
+        // 地図のパラメータ調整 (ロード中の PCD の地図を、設定を変えて作り直す)
+        let mapTune = null;
+        // ウェイポイントを囲んでまとめて削除 / 線を引いてまとめて追加
+        let waypointBoxSelector = null;
+        let waypointFreehand = null;
+        let waypointBoxSelectSelector = null;
+        // 複数選択しているウェイポイントの番号と、一緒にドラッグするときの動かす前の位置
+        const multiSelectedWaypoints = new Set();
+        let multiDragStart = null;
+        // 場所の検索で置く目印 (緯度経度で持ち、原点が変わったら置き直す)
+        let searchMarker = null;
+        let geoOriginLabel = null;
+        let cropSelector = null;
+        let mapTuneBusy = false;
+        let mapTuneRefetching = false;
+        let mapTuneRefetchCancelled = false;
+        const DRACO_DECODER_PATH = "{{ url_for('static', filename='js/three/three.js/examples/jsm/libs/draco/gltf/') }}";
 
         function quaternionToYaw(qx, qy, qz, qw) {
             const siny_cosp = 2 * (qw * qz + qx * qy);
@@ -353,7 +572,7 @@
         async function parsePGM(urlOrBuffer, mapData) {
             let buffer;
             if (typeof urlOrBuffer === 'string') {
-                const response = await fetch(urlOrBuffer);
+                const response = await fetch(urlOrBuffer, { cache: 'no-cache' });
                 if (!response.ok) {
                     throw new Error(`Failed to fetch PGM file: ${response.statusText}`);
                 }
@@ -435,88 +654,105 @@
         }
         async function loadPGMMap(mapName) { 
             const componentType = 'pgm';
-            const uniqueId = `${componentType}-${mapName}`;
             unloadMap(componentType, mapName); 
             if (!mapData || !mapData.image) {
                 console.warn("YAMLデータが存在しないか、'image'キーがありません。PGMロードをスキップします。");
                 return;
             }
             const pgmUrl = '/map/' + mapData.image; // サーバーのURLを構築
-            const PGM_Z_OFFSET = 0.0; 
-            const origin = mapData.origin; 
-            const resolution = mapData.resolution; 
             const pgmImageName = mapData.image; 
             try {
                 const pgmResult = await parsePGM(pgmUrl, mapData); 
-                const imgWidth = pgmResult.width;
-                const imgHeight = pgmResult.height;
-                const mapWidth = imgWidth * resolution;
-                const mapHeight = imgHeight * resolution;
-                const texture = new THREE.DataTexture(
-                    pgmResult.data, 
-                    imgWidth, 
-                    imgHeight, 
-                    THREE.RGBAFormat 
-                );
-                texture.flipY = false; 
-                texture.wrapS = THREE.ClampToEdgeWrapping; 
-                texture.repeat.set(-1, 1);                  
-                texture.offset.set(1, 0);                   
-                texture.needsUpdate = true;
-                const material = new THREE.MeshBasicMaterial({ 
-                    map: texture, 
-                    side: THREE.FrontSide, 
-                    transparent: true,
-                    opacity: 1.0, 
-                });
-                const geometry = new THREE.PlaneGeometry(mapWidth, mapHeight);
-                const mesh = new THREE.Mesh(geometry, material);
-                mesh.rotation.x = 0;
-                mesh.rotation.y = 0;
-                mesh.rotation.z = -Math.PI;
-                const centerX = origin[0] + mapWidth / 2;  
-                const centerY = origin[1] + mapHeight / 2; 
-                mesh.position.set(
-                    centerX,                          // X軸中心
-                    centerY,                          // Y軸中心
-                    PGM_Z_OFFSET                      // Z軸: 0.0
-                ); 
-                scene.add(mesh);
-                meshRegistry[uniqueId] = mesh; 
-                createToggle(uniqueId, `PGM/YAML (${mapName})`, mesh);
-
-                // 編集用にPGMのピクセルデータと座標変換の情報を保持する。
-                // 保存時は gray をそのまま書き出し、表示は rgba を texture 経由で更新する。
-                pgmEdit = {
-                    mapName: mapName,
-                    gray: pgmResult.gray,
-                    originalGray: new Uint8Array(pgmResult.gray),
-                    rgba: pgmResult.data,
-                    width: imgWidth,
-                    height: imgHeight,
-                    resolution: resolution,
-                    originX: origin[0],
-                    originY: origin[1],
-                    texture: texture,
-                    mesh: mesh,
-                    dirty: false,
-                    // ウェイポイント追従の塗りつぶしを取り消せるようにするための記録。
-                    // carveBase: 画素番号 -> 塗る前の値 / carveOwners: 画素番号 -> 単位名の集合
-                    // carveUnits: 単位名 -> その単位が塗った画素番号
-                    carveBase: new Map(),
-                    carveOwners: new Map(),
-                    carveUnits: new Map()
-                };
+                const mesh = createPgmLayer(mapName, pgmResult, mapData);
                 onPgmLoaded(mapName);
 
                 document.getElementById('info').innerHTML += `<br>PGM: ${pgmImageName} 配置完了`;
-                document.getElementById('pgm-opacity-label').style.display = 'flex'; // スライダーを表示
                 document.getElementById('pgm-opacity-slider').value = mesh.material.opacity;
                 console.log(`PGMマップを配置しました: ${mapName}`);
             } catch (error) {
                 console.error('PGMファイルのロード/パース中にエラーが発生しました:', pgmUrl, error);
                 document.getElementById('info').innerHTML += `<br><span class="hud-error">PGMロードエラー: ${error.message}</span>`;
             }
+        }
+
+        /** 解析した PGM を地図の上に置き、ブラシ編集できるようにする。
+         *  layerName は表示の登録名 (pgm-<layerName>)、info は YAML の内容 (resolution, origin)。 */
+        function createPgmLayer(layerName, pgmResult, info, { opacity = 1.0 } = {}) {
+            const uniqueId = `pgm-${layerName}`;
+            const PGM_Z_OFFSET = 0.0; 
+            const origin = info.origin; 
+            const resolution = info.resolution; 
+            const imgWidth = pgmResult.width;
+            const imgHeight = pgmResult.height;
+            const mapWidth = imgWidth * resolution;
+            const mapHeight = imgHeight * resolution;
+            const texture = new THREE.DataTexture(
+                pgmResult.data, 
+                imgWidth, 
+                imgHeight, 
+                THREE.RGBAFormat 
+            );
+            texture.flipY = false; 
+            texture.wrapS = THREE.ClampToEdgeWrapping; 
+            texture.repeat.set(-1, 1);                  
+            texture.offset.set(1, 0);                   
+            texture.needsUpdate = true;
+            const material = new THREE.MeshBasicMaterial({ 
+                map: texture, 
+                side: THREE.FrontSide, 
+                transparent: true,
+                opacity: opacity, 
+            });
+            const geometry = new THREE.PlaneGeometry(mapWidth, mapHeight);
+            const mesh = new THREE.Mesh(geometry, material);
+            mesh.rotation.x = 0;
+            mesh.rotation.y = 0;
+            mesh.rotation.z = -Math.PI;
+            const centerX = origin[0] + mapWidth / 2;  
+            const centerY = origin[1] + mapHeight / 2; 
+            mesh.position.set(
+                centerX,                          // X軸中心
+                centerY,                          // Y軸中心
+                PGM_Z_OFFSET                      // Z軸: 0.0
+            ); 
+            scene.add(mesh);
+            meshRegistry[uniqueId] = mesh; 
+            createToggle(uniqueId, `PGM/YAML (${layerName})`, mesh);
+            mapData = info;
+
+            // 編集用にPGMのピクセルデータと座標変換の情報を保持する。
+            // 保存時は gray をそのまま書き出し、表示は rgba を texture 経由で更新する。
+            pgmEdit = {
+                // 画素の大きさ・原点が YAML と一致しているマップ名 (「2Dマップを保存」で YAML を引き継ぐ元)
+                mapName: layerName,
+                // 表示の登録名 (アンロードの判定に使う)。別名で保存しても変わらない
+                layerName: layerName,
+                gray: pgmResult.gray,
+                originalGray: new Uint8Array(pgmResult.gray),
+                rgba: pgmResult.data,
+                width: imgWidth,
+                height: imgHeight,
+                resolution: resolution,
+                originX: origin[0],
+                originY: origin[1],
+                texture: texture,
+                mesh: mesh,
+                dirty: false,
+                // パラメータ調整のプレビューを表示中で、まだ保存していないとき true
+                tuneUnsaved: false,
+                // パラメータ調整のどの設定で作った PGM か (保存時にブラシ編集を一緒に送るか判断する)
+                tuneKey: null,
+                // ブラシやウェイポイント追従で画素を書き換えたか (プレビューを作り直すときの確認に使う)
+                editedSinceTune: false,
+                // ウェイポイント追従の塗りつぶしを取り消せるようにするための記録。
+                // carveBase: 画素番号 -> 塗る前の値 / carveOwners: 画素番号 -> 単位名の集合
+                // carveUnits: 単位名 -> その単位が塗った画素番号
+                carveBase: new Map(),
+                carveOwners: new Map(),
+                carveUnits: new Map()
+            };
+            document.getElementById('pgm-opacity-label').style.display = 'flex'; // スライダーを表示
+            return mesh;
         }
         async function loadPCD(mapName) {
             const componentType = 'pcd';
@@ -526,7 +762,8 @@
             document.getElementById('loading-message').textContent = `PCDファイル (${mapName}.pcd) をロード中...`;
             document.getElementById('loading-message').style.display = 'block';
             try {
-                const response = await fetch(pcdUrl);
+                // 保存し直した地図を読み直すことがあるので、キャッシュは毎回確認する
+                const response = await fetch(pcdUrl, { cache: 'no-cache' });
                 if (!response.ok) {
                     throw new Error(`ファイルが見つかりません。ステータス: ${response.status}`);
                 }
@@ -550,6 +787,7 @@
                 document.getElementById('loading-message').style.display = 'none';
                 createToggle(uniqueId, `PCD (${mapName})`, points);
                 updateGridBasedOnMapSize();
+                refreshMapTune();
             } catch (error) {
                 console.error('PCDファイルのロード中にエラーが発生しました:', error);
                 document.getElementById('loading-message').textContent = `エラー: PCDロード失敗 (${mapName}.pcd): ${error.message}`;
@@ -565,7 +803,7 @@
                     mapData = jsyaml.load(initialYamlData);
                     document.getElementById('info').innerHTML += `<br>YAML: ${mapName}.yaml (初期データ) ロード完了`;
                 } else {
-                    const response = await fetch(yamlUrl);
+                    const response = await fetch(yamlUrl, { cache: 'no-cache' });
                     if (!response.ok) {
                         throw new Error(`ファイルが見つかりません。ステータス: ${response.status}`);
                     }
@@ -602,6 +840,9 @@
                     throw new Error("ウェイポイントファイルが空です。");
                 }
                 waypoints = rawWaypoints;
+                // 保存するときは、読み込んだファイルと同じ名前を既定にする
+                document.getElementById('wp-save-name').value = mapName;
+                document.getElementById('wp-select').dataset.loadedName = mapName;
                 const newWaypointsGroup = new THREE.Group();
                 draggableObjects = []; // ドラッグ可能オブジェクトをリセット
                 newWaypointsGroup.name = uniqueId; 
@@ -624,7 +865,8 @@
                     sphere.position.set(x, y, z);
                     sphere.name = `waypoint_sphere_${index}`;
                     sphere.userData.waypointIndex = index;
-                    sphere.userData.attributes = wp.length > 2 ? wp.slice(2) : {}; 
+                    // 4 要素目 (緯度経度高度) は保存時に計算し直すので、属性の編集欄には出さない
+                    sphere.userData.attributes = wp.length > 2 ? wp.slice(2, 3) : {}; 
                     draggableObjects.push(sphere);
                     newWaypointsGroup.add(sphere);
                     const dir = new THREE.Vector3(1, 0, 0); 
@@ -651,8 +893,9 @@
             }
         }
         function updateWaypointPath(mapName) {
-            // ウェイポイントが動いたときは、通行可になる範囲の表示も追従させる
+            // ウェイポイントが動いたときは、通行可になる範囲と到着判定の範囲の表示も追従させる
             updateCarveRangePreview();
+            markWaypointGuidesDirty();
             const componentType = 'waypoint-path';
             const uniqueId = `${componentType}-${mapName}`;
             const labelsId = `waypoint-labels-${mapName}`;
@@ -781,7 +1024,7 @@
             const uniqueId = `${type}-${mapName}`;
             const mesh = meshRegistry[uniqueId];
             let elementExists = false;
-            if (type === 'pgm' && pgmEdit && pgmEdit.mapName === mapName) {
+            if (type === 'pgm' && pgmEdit && pgmEdit.layerName === mapName) {
                 // 編集対象が無くなるので、編集状態とパネルも片付ける。
                 // ここで中断するとメッシュの後始末ができなくなるため確認は出さず、
                 // 未保存のまま画面を閉じる場合は beforeunload で警告する。
@@ -852,11 +1095,18 @@
                     mapData = null; 
                     document.getElementById('pgm-opacity-label').style.display = 'none'; // スライダーを非表示
                 }
+                if (type === 'pcd') refreshMapTune();
                 // ウェイポイントがアンロードされたら、経路もアンロード
                 if (type === 'waypoints') {
                     const pathId = `waypoint-path-${mapName}`;
                     if (meshRegistry[pathId]) unloadMap('waypoint-path', mapName);
                     waypoints = [];
+                    multiSelectedWaypoints.clear();
+                    updateMultiSelectionUi();
+                    markWaypointGuidesDirty();
+                    // 別のウェイポイントを作るときに、前のファイルへ上書きしないよう保存名を空に戻す
+                    document.getElementById('wp-save-name').value = '';
+                    document.getElementById('wp-select').dataset.loadedName = '';
                     updateCarveRangePreview();
                     calculateAndDisplayTotalDistance();
                 }
@@ -895,6 +1145,7 @@
                     displayWaypointInfo(i, selectedWaypoint.position, selectedWaypoint.userData.attributes);
                 }
             }
+            markWaypointGuidesDirty();
             document.getElementById('info').innerHTML = '全ウェイポイントの向きを自動調整しました。';
         }
         function toggleAutoOrient(isAuto) {
@@ -906,7 +1157,11 @@
             }
         }
         async function executeMapLoading(mapName, loadPCDFlag, loadPGMFlag, loadWaypointsFlag) {
+            // 表示中のウェイポイント (別の名前や、地図なしで作ったもの) は、これからロードする地図の上で編集を続けられるよう付け替える
+            if (currentMapName !== mapName) renameWaypointLayer(currentMapName, mapName);
             currentMapName = mapName; 
+            // ウェイポイントがまだ無ければ、保存名はこのマップの名前にしておく
+            if (waypoints.length === 0) document.getElementById('wp-save-name').value = mapName;
             document.getElementById('map-name-input').value = mapName;
             document.getElementById('loading-message').textContent = `マップ '${mapName}' のファイルをロード中...`;
             document.getElementById('loading-message').style.display = 'block';
@@ -929,6 +1184,8 @@
             }
             // このマップに保存されている自己位置推定の初期位置を読み込む
             await loadInitialPose(mapName);
+            // Google 背景を重ねるための原点を読み込む (衛星写真の範囲はカメラの視点に合わせて自動で変わる)
+            await loadGeoOrigin(mapName);
             document.getElementById('loading-message').style.display = 'none';
         }
         window.startLoadProcess = async function() {
@@ -959,9 +1216,11 @@
             loadModal.style.display = 'block';
 
             loadMapButton.onclick = async () => {
-                const pcdToLoad = pcdSelect.value;
-                const pgmToLoad = pgmSelect.value;
-                const wpToLoad = wpSelect.value;
+                // ロード済みの種類は選択欄が無効になっているが値は残っているので、読み直さない
+                // (読み直すと、ウェイポイントなどの保存していない編集が消える)
+                const pcdToLoad = pcdSelect.disabled ? '' : pcdSelect.value;
+                const pgmToLoad = pgmSelect.disabled ? '' : pgmSelect.value;
+                const wpToLoad = wpSelect.disabled ? '' : wpSelect.value;
 
                 loadModal.style.display = 'none';
 
@@ -1079,6 +1338,17 @@
             mouse.y = -(event.clientY / container.clientHeight) * 2 + 1;
             raycaster.setFromCamera(mouse, camera);
 
+            // Shift / Ctrl を押しながらクリックすると、複数選択に足したり外したりする
+            // (初期位置マーカーと重なっていても、ウェイポイントを優先する)
+            if (event.shiftKey || event.ctrlKey || event.metaKey) {
+                const group = Object.keys(meshRegistry).filter(key => key.startsWith('waypoints-')).map(key => meshRegistry[key])[0];
+                if (group && group.visible) {
+                    const hits = raycaster.intersectObjects(group.children.filter(c => c.isMesh && c.name.startsWith('waypoint_sphere_')));
+                    if (hits.length > 0) toggleMultiSelection(hits[0].object.userData.waypointIndex);
+                }
+                return;
+            }
+
             // 初期位置マーカーの選択。ウェイポイントと同じく、クリックで選ぶと
             // ドラッグでの移動とギズモでの向き変更ができるようになる。
             if (initialPoseMarker && initialPoseMarker.visible
@@ -1110,6 +1380,7 @@
             }
             if (!waypointsGroup) return;
             const intersects = raycaster.intersectObjects(waypointsGroup.children.filter(c => c.isMesh && c.name.startsWith('waypoint_sphere_'))); 
+            if (multiSelectedWaypoints.size > 0) clearMultiSelection();
             if (selectedWaypoint) {
                 selectedWaypoint.material.color.setHex(0x00ffff);
                 // 選択解除時に元の色に戻す
@@ -1183,6 +1454,10 @@
                 <p><strong>向き (Yaw):</strong> ${yawDeg.toFixed(1)}°</p>
                 <p><strong>始点からの距離:</strong> ${cumulativeDistance.toFixed(2)}m</p>
             `;
+            const gnss = waypointGnss(waypoints[index]);
+            if (gnss) {
+                basicInfoHtml += `<p><strong>緯度経度高度:</strong> ${gnss.latitude.toFixed(7)}, ${gnss.longitude.toFixed(7)}, ${gnss.altitude.toFixed(2)} m</p>`;
+            }
 
             let distanceInfoHtml = '<p><strong>距離:</strong> ';
             if (index > 0) {
@@ -1285,6 +1560,7 @@
                 const newColor = getColorByType(value);
                 selectedWaypoint.material.color.setHex(newColor);
             }
+            markWaypointGuidesDirty();
             document.getElementById('info').innerHTML = `ウェイポイント ${index} の属性 '${key}' を更新しました。`;
         }
         function hideWaypointInfo() {
@@ -1354,6 +1630,7 @@
             if (waypoints[index]) {
                 waypoints[index][1] = [newQuat.x, newQuat.y, newQuat.z, newQuat.w];
             }
+            markWaypointGuidesDirty();
             displayWaypointInfo(index, selectedWaypoint.position, selectedWaypoint.userData.attributes);
             document.getElementById('info').innerHTML = `ウェイポイント ${index} の向きを ${newYawDeg.toFixed(1)}° に更新しました。`;
         }
@@ -1385,43 +1662,8 @@
                 if (draggableIndex > -1) {
                     draggableObjects.splice(draggableIndex, 1);
                 }
-                // 4. ウェイポイントグループの子供をすべてクリアし、waypoints配列に基づいて再構築
-                while(waypointsGroup.children.length > 0){
-                    const child = waypointsGroup.children[0];
-                    if (child.geometry) child.geometry.dispose();
-                    if (child.material) {
-                        if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
-                        else if (child.material.dispose) child.material.dispose();
-                    }
-                    waypointsGroup.remove(child);
-                };
-                draggableObjects.length = 0; // draggableObjectsもクリア
-                // waypoints配列に基づいて、すべてのウェイポイントオブジェクトを再作成
-                waypoints.forEach((wp, idx) => {
-                    const pos = wp[0];
-                    const quat = wp[1];
-                    const attrs = wp.length > 2 ? wp.slice(2) : {};
-
-                    const SPHERE_RADIUS = 0.3;
-                    const geometry = new THREE.SphereGeometry(SPHERE_RADIUS, 16, 16);
-                    const type = (attrs && attrs.length > 0 && attrs[0].type) ? attrs[0].type : 'default';
-                    const color = getColorByType(type);
-                    const material = new THREE.MeshBasicMaterial({ color: color });
-                    const sphere = new THREE.Mesh(geometry, material);
-                    sphere.position.set(pos[0], pos[1], pos[2]);
-                    sphere.name = `waypoint_sphere_${idx}`;
-                    sphere.userData.waypointIndex = idx;
-                    sphere.userData.attributes = attrs;
-                    waypointsGroup.add(sphere);
-                    draggableObjects.push(sphere);
-
-                    const dir = new THREE.Vector3(1, 0, 0).applyQuaternion(new THREE.Quaternion().fromArray(quat));
-                    const arrowHelper = new THREE.ArrowHelper(dir, sphere.position, 1.0, 0xffff00, 0.2, 0.15);
-                    arrowHelper.name = `waypoint_arrow_${idx}`;
-                    arrowHelper.userData = { waypointIndex: idx };
-                    waypointsGroup.add(arrowHelper);
-                });
-                refreshDragControlsObjects();
+                // 4. waypoints配列に基づいて、すべてのウェイポイントオブジェクトを再作成
+                rebuildWaypointObjects(waypointsGroup);
 
                 // 選択状態をクリア
                 selectedWaypoint = null;
@@ -1433,59 +1675,82 @@
             }
         }
 
-        function addWaypointAt(position, insertionIndex) {
-            if (!currentMapName) {
-                alert("ウェイポイントを追加するには、まずマップをロードまたは指定してください。");
-                toggleAddWaypointMode(null); // モードを解除
-                return;
-            }
-        
-            const componentType = 'waypoints';
-            const uniqueId = `${componentType}-${currentMapName}`;
+        // 新しく置くウェイポイントの属性 (waypoint_manager の既定値と同じ)
+        const DEFAULT_WAYPOINT_ATTRIBUTES = {
+            "type": "normal",
+            "value": 0.0,
+            "xy_tolerance": 1.0,
+            "yaw_tolerance": 3.14
+        };
+
+        /**
+         * 表示中のウェイポイント (グループ・経路・距離ラベル) の登録名を from から to に付け替える。
+         * ウェイポイントだけ (または地図なしで作ったもの) を表示しているところへ地図をロードしても、
+         * 登録名がいまのマップ名とずれて編集できなくなるのを防ぐ。
+         */
+        function renameWaypointLayer(from, to) {
+            const group = meshRegistry[`waypoints-${from}`];
+            if (!group || from === to || meshRegistry[`waypoints-${to}`]) return;
+            [['waypoints', group], ['waypoint-path', meshRegistry[`waypoint-path-${from}`]],
+             ['waypoint-labels', meshRegistry[`waypoint-labels-${from}`]]].forEach(([type, object]) => {
+                if (!object) return;
+                delete meshRegistry[`${type}-${from}`];
+                meshRegistry[`${type}-${to}`] = object;
+                object.name = `${type}-${to}`;
+            });
+            const oldToggle = document.getElementById(`waypoints-${from}-label`);
+            const visible = group.visible;
+            if (oldToggle) oldToggle.remove();
+            const label = createToggle(`waypoints-${to}`, `Waypoints (${document.getElementById('wp-save-name').value.trim() || to || '新規'})`, group);
+            label.querySelector('input').checked = visible;
+            const pathToggle = document.getElementById(`waypoint-path-${from}-label`);
+            if (pathToggle) pathToggle.remove();
+        }
+
+        /** いまのマップのウェイポイントのグループ。無ければ作る。 */
+        function ensureWaypointsGroup() {
+            const uniqueId = `waypoints-${currentMapName}`;
             let waypointsGroup = scene.getObjectByName(uniqueId);
-        
-            // ウェイポイントグループがなければ新規作成
             if (!waypointsGroup) {
                 waypointsGroup = new THREE.Group();
                 waypointsGroup.name = uniqueId;
                 scene.add(waypointsGroup);
                 meshRegistry[uniqueId] = waypointsGroup;
-                createToggle(uniqueId, `Waypoints (${currentMapName})`, waypointsGroup); 
+                createToggle(uniqueId, `Waypoints (${currentMapName || '新規'})`, waypointsGroup);
+                // 地図を選ばずに置き始めたときは、中央の「マップを選択してください」を消す
+                document.getElementById('loading-message').style.display = 'none';
             }
-        
-            const WAYPOINT_Z_OFFSET = 0.0;
-            const x = position.x;
-            const y = position.y;
-            const z = WAYPOINT_Z_OFFSET;
-        
-            const defaultAttributes = {
-                "type": "normal",
-                "value": 0.0,
-                "xy_tolerance": 1.0,
-                "yaw_tolerance": 3.14
-            };
+            return waypointsGroup;
+        }
 
-            const newWpData = [[x, y, z], [0, 0, 0, 1], defaultAttributes]; // [position], [quaternion], [attributes]
-            const finalIndex = (insertionIndex === undefined || insertionIndex > waypoints.length) ? waypoints.length : insertionIndex;
-            // 間に挟むと元の区間が無くなるので、その分の塗りつぶしを元へ戻しておく
-            releaseWaypointCarve(null, waypoints[finalIndex - 1], waypoints[finalIndex]);
-            waypoints.splice(finalIndex, 0, newWpData);
-
-            // 既存のウェイポイントオブジェクトをすべてクリア
-            while(waypointsGroup.children.length > 0){ 
-                waypointsGroup.remove(waypointsGroup.children[0]); 
-            }
-            draggableObjects = [];
-
-            // 選択状態をクリア
+        /** 選択中のウェイポイントを外す (まとめて追加・削除する前に呼ぶ) */
+        function clearWaypointSelection() {
+            if (transformControls.object && transformControls.object !== initialPoseMarker) transformControls.detach();
             selectedWaypoint = null;
-            transformControls.detach();
+            document.getElementById('add-waypoint-after-button').disabled = true;
+            hideWaypointInfo();
+        }
 
-            // waypoints配列からすべてのオブジェクトを再生成
+        /** waypoints 配列から、球と向きの矢印をすべて作り直す */
+        function rebuildWaypointObjects(waypointsGroup) {
+            // 並びが変わると番号がずれるので、複数選択は外す
+            multiSelectedWaypoints.clear();
+            multiDragStart = null;
+            while (waypointsGroup.children.length > 0) {
+                const child = waypointsGroup.children[0];
+                if (child.geometry) child.geometry.dispose();
+                if (child.material) {
+                    if (Array.isArray(child.material)) child.material.forEach(m => m.dispose());
+                    else if (child.material.dispose) child.material.dispose();
+                }
+                waypointsGroup.remove(child);
+            }
+            draggableObjects.length = 0;
             waypoints.forEach((wp, idx) => {
                 const pos = wp[0];
                 const quat = wp[1];
-                const attrs = wp.length > 2 ? wp.slice(2) : {};
+                // 4 要素目 (緯度経度高度) は保存時に計算し直すので、属性の編集欄には出さない
+                const attrs = wp.length > 2 ? wp.slice(2, 3) : {};
 
                 const SPHERE_RADIUS = 0.3;
                 const geometry = new THREE.SphereGeometry(SPHERE_RADIUS, 16, 16);
@@ -1507,10 +1772,29 @@
                 waypointsGroup.add(arrowHelper);
             });
             refreshDragControlsObjects();
+            updateMultiSelectionUi();
+        }
+
+        function addWaypointAt(position, insertionIndex) {
+            // 2D・3D の地図が無くても置ける (地面 z=0 の平面の上に置く)
+            const waypointsGroup = ensureWaypointsGroup();
+            const WAYPOINT_Z_OFFSET = 0.0;
+            const newWpData = [[position.x, position.y, WAYPOINT_Z_OFFSET], [0, 0, 0, 1], { ...DEFAULT_WAYPOINT_ATTRIBUTES }]; // [position], [quaternion], [attributes]
+            const finalIndex = (insertionIndex === undefined || insertionIndex > waypoints.length) ? waypoints.length : insertionIndex;
+            // 間に挟むと元の区間が無くなるので、その分の塗りつぶしを元へ戻しておく
+            releaseWaypointCarve(null, waypoints[finalIndex - 1], waypoints[finalIndex]);
+            waypoints.splice(finalIndex, 0, newWpData);
+
+            // 選択状態をクリアして、waypoints配列からすべてのオブジェクトを再生成
+            selectedWaypoint = null;
+            transformControls.detach();
+            rebuildWaypointObjects(waypointsGroup);
 
             updateWaypointPath(currentMapName);
             if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
             calculateAndDisplayTotalDistance();
+            // 「ウェイポイント移動に追従して通行可にする」がオンなら、動かさなくても置いた時点で通行可にする
+            carveAroundWaypoint(finalIndex);
         }
 
         let currentInsertionIndex = undefined;
@@ -1526,6 +1810,7 @@
 
             if (isAddingWaypointMode) {
                 clearPgmBrush();          // クリックの意味が重ならないようにする
+                stopWaypointTools();
                 container.classList.add('add-waypoint-mode');
                 currentInsertionIndex = insertionMode;
                 let modeText = insertionMode === 0 ? "先頭" : (insertionMode === undefined ? "末尾" : "選択後");
@@ -1667,6 +1952,8 @@
         function commitPgmChanges(changed) {
             if (!changed) return;
             pgmEdit.texture.needsUpdate = true;
+            // パラメータ調整のプレビューの上から手で直した (作り直すと失われる)
+            pgmEdit.editedSinceTune = true;
             if (!pgmEdit.dirty) {
                 pgmEdit.dirty = true;
             }
@@ -1711,6 +1998,7 @@
                 // クリックの意味が衝突するため、同時に使えない指定モードは解除する
                 if (isAddingWaypointMode) toggleAddWaypointMode(null);
                 if (isPickingInitialPose) togglePickInitialPose();
+                stopWaypointTools();
                 setPgmEditStatus('ブラシ選択中: 2Dマップ上を左ドラッグで塗ります。'
                                  + 'ウェイポイントやカメラの操作もそのまま使えます。'
                                  + 'Esc か「なし」で終了します。');
@@ -1905,6 +2193,32 @@
             commitPgmChanges(changed);
         }
 
+        /**
+         * 置いてあるすべてのウェイポイントのまわりと、隣どうしの区間を、いまのマージンで通行可にする。
+         * 「ウェイポイント移動に追従して通行可にする」にチェックを入れたときや、マージンを変えたときに呼ぶ。
+         * 前に塗った分は単位ごとに元へ戻してから塗り直すので、マージンを狭めると広げた分は戻る。
+         */
+        function carveAllWaypoints() {
+            if (!pgmEdit || waypoints.length === 0) return false;
+            if (!document.getElementById('pgm-follow-waypoints').checked) return false;
+            const margin = parseFloat(document.getElementById('pgm-waypoint-margin').value);
+            const enabled = margin > 0;
+            let changed = false;
+            waypoints.forEach((wp, index) => {
+                if (!wp || !wp[0]) return;
+                const [x, y] = wp[0];
+                changed = recarveUnit(nodeCarveKey(wp),
+                    enabled && (() => paintPgmDisc(x, y, margin, PGM_FREE))) || changed;
+                const next = waypoints[index + 1];
+                if (next && next[0]) {
+                    changed = recarveUnit(edgeCarveKey(wp, next),
+                        enabled && (() => paintPgmCapsule(x, y, next[0][0], next[0][1], margin, PGM_FREE))) || changed;
+                }
+            });
+            commitPgmChanges(changed);
+            return true;
+        }
+
         /** ウェイポイントを動かしたときに、その周囲と前後の区間を通行可にする。
          *  置き直したときは、動かす前に塗った分を元に戻してから塗り直す。 */
         function carveAroundWaypoint(index) {
@@ -1936,6 +2250,199 @@
         // 追従で塗られる範囲 (各ウェイポイントの円と、その間を結ぶ帯) は
         // 塗ったあとの色だけでは周囲と見分けにくいので、地図の上に重ねて示す。
         // =====================================================================
+
+        // =====================================================================
+        // ウェイポイントの到着判定の範囲・停止秒数の表示
+        // ---------------------------------------------------------------------
+        // waypoint_manager の判定と同じ意味で描く。
+        //   到着: 距離 <= xy_tolerance かつ 向きの差 <= yaw_tolerance → 円と扇形
+        //   通過: 前のウェイポイントから来た向きで、ウェイポイントを越えた (内積 > 0) → 破線
+        //   stop: value 秒止まる → 赤い柱 (高さが秒数に比例) とラベル / slow: value m/s に減速 → ラベル
+        // =====================================================================
+        const WAYPOINT_DEFAULT_XY_TOLERANCE = 1.0;     // waypoint_manager が属性に無いときに使う値
+        const WAYPOINT_DEFAULT_YAW_TOLERANCE = 3.14;
+        const GUIDE_Z = 0.03;                          // 地図 (z=0) のすぐ上に置く
+        const guideLineMaterials = new Map();
+        const guideFillMaterials = new Map();
+        const passLineMaterial = new THREE.LineDashedMaterial({
+            color: 0xffffff, dashSize: 0.25, gapSize: 0.18, transparent: true, opacity: 0.75, depthWrite: false,
+        });
+        const yawFanMaterial = new THREE.MeshBasicMaterial({
+            color: 0xffff00, transparent: true, opacity: 0.28, depthWrite: false, side: THREE.DoubleSide,
+        });
+        const yawFanLineMaterial = new THREE.LineBasicMaterial({ color: 0xffff00, transparent: true, opacity: 0.9, depthWrite: false });
+        const stopPillarMaterial = new THREE.MeshBasicMaterial({ color: 0xff3030, transparent: true, opacity: 0.55, depthWrite: false });
+
+        function guideLineMaterial(color) {
+            if (!guideLineMaterials.has(color)) {
+                guideLineMaterials.set(color, new THREE.LineBasicMaterial({ color, transparent: true, opacity: 0.9, depthWrite: false }));
+            }
+            return guideLineMaterials.get(color);
+        }
+
+        function guideFillMaterial(color) {
+            if (!guideFillMaterials.has(color)) {
+                guideFillMaterials.set(color, new THREE.MeshBasicMaterial({
+                    color, transparent: true, opacity: 0.12, depthWrite: false, side: THREE.DoubleSide,
+                }));
+            }
+            return guideFillMaterials.get(color);
+        }
+
+        function markWaypointGuidesDirty() {
+            waypointGuidesDirty = true;
+        }
+
+        /** ウェイポイントの属性 (3 要素目) を、waypoint_manager と同じ既定値で読む */
+        function waypointAttributes(wp) {
+            const raw = wp.length > 2 ? (Array.isArray(wp[2]) ? wp[2][0] : wp[2]) : null;
+            const attr = (raw && typeof raw === 'object') ? raw : {};
+            const number = (value, fallback) => {
+                const n = Number(value);
+                return value === undefined || value === null || value === '' || !Number.isFinite(n) ? fallback : n;
+            };
+            return {
+                type: attr.type || 'normal',
+                value: number(attr.value, 0),
+                xyTolerance: Math.max(0, number(attr.xy_tolerance, WAYPOINT_DEFAULT_XY_TOLERANCE)),
+                yawTolerance: Math.max(0, number(attr.yaw_tolerance, WAYPOINT_DEFAULT_YAW_TOLERANCE)),
+            };
+        }
+
+        function formatNumber(value, digits = 2) {
+            return Number(value.toFixed(digits)).toString();
+        }
+
+        function makeGuideLabel(lines, className) {
+            const div = document.createElement('div');
+            div.className = `waypoint-guide-label ${className || ''}`;
+            lines.forEach((line) => {
+                const row = document.createElement('div');
+                row.textContent = line;
+                div.appendChild(row);
+            });
+            return new CSS2DObject(div);
+        }
+
+        function clearWaypointGuides() {
+            if (!waypointGuidesGroup) return;
+            while (waypointGuidesGroup.children.length > 0) {
+                const child = waypointGuidesGroup.children[0];
+                waypointGuidesGroup.remove(child);   // CSS2DObject は外すと DOM からも消える
+                if (child.geometry) child.geometry.dispose();   // 材質は共通なので破棄しない
+            }
+        }
+
+        /** 到着判定の範囲・通過線・停止の柱・ラベルを描き直す */
+        function updateWaypointGuides() {
+            waypointGuidesDirty = false;
+            if (!scene) return;
+            if (!waypointGuidesGroup) {
+                waypointGuidesGroup = new THREE.Group();
+                waypointGuidesGroup.name = 'waypoint-guides';
+                scene.add(waypointGuidesGroup);
+            }
+            clearWaypointGuides();
+            const showTolerance = document.getElementById('show-waypoint-tolerance').checked;
+            const showLabels = document.getElementById('show-waypoint-attr-labels').checked;
+            if (waypoints.length === 0 || (!showTolerance && !showLabels)) return;
+
+            const SEGMENTS = 48;
+            waypoints.forEach((wp, index) => {
+                if (!wp || !wp[0] || !wp[1]) return;
+                const [x, y] = wp[0];
+                const attr = waypointAttributes(wp);
+                const color = getColorByType(attr.type);
+                const yaw = quaternionToYaw(wp[1][0], wp[1][1], wp[1][2], wp[1][3]);
+                const yawIgnored = attr.yawTolerance >= Math.PI - 0.005;
+
+                if (showTolerance) {
+                    // 到着と判定する距離 (円)
+                    if (attr.xyTolerance > 0) {
+                        const disc = new THREE.Mesh(new THREE.CircleGeometry(attr.xyTolerance, SEGMENTS), guideFillMaterial(color));
+                        disc.position.set(x, y, GUIDE_Z);
+                        waypointGuidesGroup.add(disc);
+                        const ring = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints(
+                            Array.from({ length: SEGMENTS }, (_, i) => {
+                                const t = i / SEGMENTS * Math.PI * 2;
+                                return new THREE.Vector3(Math.cos(t) * attr.xyTolerance, Math.sin(t) * attr.xyTolerance, 0);
+                            })), guideLineMaterial(color));
+                        ring.position.set(x, y, GUIDE_Z);
+                        waypointGuidesGroup.add(ring);
+                    }
+                    // 到着と判定する向き (扇形)。±180° 以上なら向きは問わないので描かない
+                    if (!yawIgnored) {
+                        const radius = Math.max(attr.xyTolerance, 0.8);
+                        const fan = new THREE.Mesh(new THREE.CircleGeometry(radius, SEGMENTS, yaw - attr.yawTolerance,
+                            Math.max(attr.yawTolerance * 2, 0.01)), yawFanMaterial);
+                        fan.position.set(x, y, GUIDE_Z + 0.005);
+                        waypointGuidesGroup.add(fan);
+                        const edge = new THREE.LineSegments(new THREE.BufferGeometry().setFromPoints([
+                            new THREE.Vector3(0, 0, 0),
+                            new THREE.Vector3(Math.cos(yaw - attr.yawTolerance) * radius, Math.sin(yaw - attr.yawTolerance) * radius, 0),
+                            new THREE.Vector3(0, 0, 0),
+                            new THREE.Vector3(Math.cos(yaw + attr.yawTolerance) * radius, Math.sin(yaw + attr.yawTolerance) * radius, 0),
+                        ]), yawFanLineMaterial);
+                        edge.position.set(x, y, GUIDE_Z + 0.005);
+                        waypointGuidesGroup.add(edge);
+                    }
+                    // 通過判定の線 (前のウェイポイントから来た向きに垂直)
+                    const prev = waypoints[index - 1];
+                    if (prev && prev[0]) {
+                        const dx = x - prev[0][0];
+                        const dy = y - prev[0][1];
+                        const length = Math.hypot(dx, dy);
+                        if (length > 1e-6) {
+                            const half = Math.max(attr.xyTolerance, 1.0) * 1.3;
+                            const px = -dy / length * half;
+                            const py = dx / length * half;
+                            const line = new THREE.Line(new THREE.BufferGeometry().setFromPoints([
+                                new THREE.Vector3(-px, -py, 0), new THREE.Vector3(px, py, 0),
+                            ]), passLineMaterial);
+                            line.computeLineDistances();
+                            line.position.set(x, y, GUIDE_Z);
+                            waypointGuidesGroup.add(line);
+                        }
+                    }
+                }
+
+                // 停止秒数 (柱の高さ)
+                if (attr.type === 'stop' && attr.value > 0 && (showTolerance || showLabels)) {
+                    const height = Math.min(Math.max(attr.value * STOP_PILLAR_METERS_PER_SECOND, 0.3), STOP_PILLAR_MAX_HEIGHT);
+                    const pillar = new THREE.Mesh(new THREE.CylinderGeometry(0.12, 0.12, height, 16), stopPillarMaterial);
+                    pillar.rotation.x = Math.PI / 2;   // 円柱の軸 (y) を z に向ける
+                    pillar.position.set(x, y, height / 2);
+                    waypointGuidesGroup.add(pillar);
+                    if (showLabels) {
+                        const stopLabel = makeGuideLabel([`停止 ${formatNumber(attr.value, 1)} 秒`], 'waypoint-guide-label--stop');
+                        stopLabel.position.set(x, y, height + 0.3);
+                        waypointGuidesGroup.add(stopLabel);
+                    }
+                }
+
+                if (showLabels) {
+                    const lines = [`#${index}`];
+                    if (attr.type === 'slow') lines[0] += ` 減速 ${formatNumber(attr.value)} m/s`;
+                    lines.push(`到着 ${formatNumber(attr.xyTolerance)} m / `
+                        + (yawIgnored ? '向き不問' : `±${formatNumber(THREE.MathUtils.radToDeg(attr.yawTolerance), 0)}°`));
+                    lines.push(`向き ${formatNumber(THREE.MathUtils.radToDeg(yaw), 0)}°`);
+                    const label = makeGuideLabel(lines, `waypoint-guide-label--${attr.type}`);
+                    // 球や距離ラベルと重ならないよう、円の外側 (向きと反対側) に置く
+                    const offset = Math.max(attr.xyTolerance, 0.8) + 0.4;
+                    label.position.set(x - Math.cos(yaw) * offset, y - Math.sin(yaw) * offset, GUIDE_Z);
+                    label.center.set(0.5, 0.5);
+                    waypointGuidesGroup.add(label);
+                }
+            });
+        }
+
+        /** ウェイポイントの表示を切り替えたら、到着判定の表示も合わせる */
+        function syncWaypointGuidesVisibility() {
+            if (!waypointGuidesGroup) return;
+            const group = meshRegistry[`waypoints-${currentMapName}`]
+                || Object.keys(meshRegistry).filter(k => k.startsWith('waypoints-')).map(k => meshRegistry[k])[0];
+            waypointGuidesGroup.visible = Boolean(group && group.visible);
+        }
 
         const CARVE_RANGE_COLOR = 0x00e5ff;   // 地図の赤/緑やマーカーのマゼンタと被らない色
         const carveRangeFillMaterial = new THREE.MeshBasicMaterial({
@@ -2037,6 +2544,11 @@
                 alert('2Dマップ (PGM) がロードされていません。');
                 return;
             }
+            if (pgmEdit.tuneUnsaved) {
+                // 解像度や範囲が変わっていると、既存の YAML と合わなくなるため
+                setPgmEditStatus('パラメータ調整のプレビュー中です。「地図のパラメータ調整」の「PCD・PGM を保存」で保存してください。', 'hud-error');
+                return;
+            }
             const saveAs = document.getElementById('pgm-save-name').value.trim();
             if (!saveAs) {
                 setPgmEditStatus('保存するマップ名を入力してください。', 'hud-error');
@@ -2120,6 +2632,12 @@
             objects.length = 0;
             if (isInitialPoseSelected && initialPoseMarker) {
                 objects.push(initialPoseMarker);
+            } else if (multiSelectedWaypoints.size > 0) {
+                // 複数選択中は、選んだどれを掴んでも全部一緒に動かす
+                multiSelectedWaypoints.forEach((index) => {
+                    const sphere = waypointSphere(index);
+                    if (sphere) objects.push(sphere);
+                });
             } else if (selectedWaypoint) {
                 objects.push(selectedWaypoint);
             }
@@ -2203,6 +2721,127 @@
             }
         }
 
+        /**
+         * 初期位置 (x0, y0) を地図の新しい原点にする。サーバーで地図一式の座標を (-x0, -y0) ずらし、
+         * 表示中の点群・2D地図・ウェイポイント・カメラ・Google 背景の原点も同じだけずらして、見た目は変えない。
+         */
+        async function rebaseMapOriginToInitialPose(pose, yaw) {
+            const mapName = currentMapName;
+            const [x0, y0] = pose;
+            const dx = -x0;
+            const dy = -y0;
+            if (pgmEdit && pgmEdit.tuneUnsaved) {
+                setInitialPoseStatus('パラメータ調整のプレビュー中は原点を合わせられません。先に「PCD・PGM を保存」するか'
+                    + '「保存済みの状態に戻す」を押してください。', 'hud-error');
+                return;
+            }
+            let files;
+            try {
+                const response = await fetch('/rebase_map_origin', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ map_name: mapName, pose, dry_run: true }),
+                });
+                const json = await response.json();
+                if (json.status !== 'success') throw new Error(json.message || `HTTP ${response.status}`);
+                files = json.files;
+            } catch (error) {
+                setInitialPoseStatus(`原点を合わせられません: ${error.message}`, 'hud-error');
+                return;
+            }
+            const waypointName = document.getElementById('wp-save-name').value.trim() || mapName;
+            const otherLayers = Object.keys(meshRegistry)
+                .filter(key => /^(pcd|pgm)-/.test(key) && !key.endsWith(`-${mapName}`))
+                .map(key => key.replace('-', ' '));
+            const lines = [
+                `初期位置 (${x0.toFixed(3)}, ${y0.toFixed(3)}) を地図「${mapName}」の新しい原点 (0, 0) にします。`,
+                `次のファイルの座標を x ${dx >= 0 ? '+' : ''}${dx.toFixed(3)} m, y ${dy >= 0 ? '+' : ''}${dy.toFixed(3)} m ずらして書き換えます (向きと高さは変えません)。`,
+                ...files.map(f => `  ・${f}`),
+            ];
+            if (waypoints.length > 0 && waypointName !== mapName) {
+                lines.push(`表示中のウェイポイント (${waypointName}) も同じだけずらします。waypoints/${waypointName}.json は書き換えないので、「ウェイポイントを保存」で保存してください。`);
+            }
+            if (otherLayers.length > 0) {
+                lines.push(`別の名前の地図 (${otherLayers.join(', ')}) のファイルは書き換えません。`);
+            }
+            if (pgmEdit && pgmEdit.dirty) lines.push('2D マップの保存していない編集は、そのまま残ります。');
+            if (!confirm(lines.join('\n'))) return;
+
+            // 手入力で合わせた原点 (GNSS を使わずに作った地図) は、新しい原点の場所に置き直す
+            let manualOrigin = null;
+            if (geoFrame && geoOriginSource === 'manual' && geoOriginMapName === mapName) {
+                const ll = geoFrame.mapToLatLon(x0, y0);
+                manualOrigin = { lat: ll.lat, lon: ll.lon, alt: geoFrame.alt, yawDeg: geoFrame.yawDeg };
+            }
+
+            setInitialPoseStatus('地図の原点を合わせています… (点群が大きいと時間がかかります)');
+            let result;
+            try {
+                const response = await fetch('/rebase_map_origin', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ map_name: mapName, pose }),
+                });
+                result = await response.json();
+                if (result.status !== 'success') throw new Error(result.message || `HTTP ${response.status}`);
+            } catch (error) {
+                console.error('地図の原点を合わせられませんでした:', error);
+                setInitialPoseStatus(`原点を合わせられませんでした: ${error.message}`, 'hud-error');
+                return;
+            }
+
+            shiftLoadedMapInViewer(mapName, dx, dy);
+            setInitialPoseFields(0, 0, yaw);
+            if (manualOrigin) writeGeoSettings(mapName, { manualOrigin });
+            await loadGeoOrigin(mapName);
+            if (mapTune && mapTune.mapName === mapName) {
+                mapTune.pcdPreviewKey = null;
+                await loadMapTuneInfo();
+            }
+            setInitialPoseStatus(`${result.message} 初期位置は (0, 0) で保存しました。`
+                + (result.notes.length ? ` ${result.notes.join(' ')}` : '')
+                + (waypoints.length > 0 && waypointName !== mapName ? ` ウェイポイント (${waypointName}) は「ウェイポイントを保存」で保存してください。` : ''));
+        }
+
+        /** 表示中の地図・ウェイポイント・カメラを (dx, dy) ずらす (ファイルは別に書き換え済み) */
+        function shiftLoadedMapInViewer(mapName, dx, dy) {
+            const cloud = meshRegistry[`pcd-${mapName}`];
+            if (cloud) {
+                cloud.geometry.translate(dx, dy, 0);
+                cloud.geometry.boundingBox = null;
+                cloud.geometry.computeBoundingSphere();
+            }
+            const pgmMesh = meshRegistry[`pgm-${mapName}`];
+            if (pgmMesh) {
+                pgmMesh.position.x += dx;
+                pgmMesh.position.y += dy;
+                if (pgmEdit && pgmEdit.mesh === pgmMesh) {
+                    pgmEdit.originX += dx;
+                    pgmEdit.originY += dy;
+                }
+                if (mapData && Array.isArray(mapData.origin)) {
+                    mapData.origin = [mapData.origin[0] + dx, mapData.origin[1] + dy, mapData.origin[2] || 0];
+                }
+            }
+            // ウェイポイントは 2D マップと一緒に動くので、通行可の塗りつぶしの記録 (画素番号) はそのまま使える
+            if (waypoints.length > 0) {
+                waypoints.forEach((wp) => {
+                    if (!wp || !wp[0]) return;
+                    wp[0][0] += dx;
+                    wp[0][1] += dy;
+                });
+                clearWaypointSelection();
+                const group = meshRegistry[`waypoints-${currentMapName}`];
+                if (group) rebuildWaypointObjects(group);
+                updateWaypointPath(currentMapName);
+            }
+            if (regionSelector) regionSelector.setRegion(null);
+            orbitControls.target.x += dx;
+            orbitControls.target.y += dy;
+            camera.position.x += dx;
+            camera.position.y += dy;
+            orbitControls.update();
+            updateZRangePlanes();
+        }
+
         async function saveInitialPose() {
             if (!currentMapName) {
                 alert('マップがロードされていません。');
@@ -2213,6 +2852,12 @@
             const yaw = (parseFloat(document.getElementById('init-pose-yaw').value) || 0) * Math.PI / 180;
             // yaw だけの回転なので qx=qy=0
             const pose = [x, y, initialPoseZ, 0.0, 0.0, Math.sin(yaw / 2), Math.cos(yaw / 2)];
+
+            // 初期位置を地図の新しい原点にする (位置だけ。向きは初期位置に残す)
+            if (document.getElementById('init-pose-rebase').checked && (Math.abs(x) >= 0.0005 || Math.abs(y) >= 0.0005)) {
+                await rebaseMapOriginToInitialPose(pose, yaw);
+                return;
+            }
 
             setInitialPoseStatus('保存しています…');
             try {
@@ -2238,9 +2883,2024 @@
                 : 'マップ上でクリックして指定';
             if (isPickingInitialPose) {
                 clearPgmBrush();          // クリックの意味が重ならないようにする
+                stopWaypointTools();
                 setInitialPoseStatus('マップ上をクリックして初期位置を指定してください。向きは Yaw で調整します。');
             }
             updateViewerCursor();
+        }
+
+        // =====================================================================
+        // Google 背景 (2D 衛星写真 / 3D Tiles)
+        // ---------------------------------------------------------------------
+        // 地図座標の原点は data/<マップ名>/init_lat_lon_alt.txt (fix2xyz と同じ定義)。
+        // 高さ補正と手入力した原点は、マップごとにこのブラウザへ保存する。
+        // =====================================================================
+        const GEO_SETTINGS_PREFIX = 'hokuyoMapViewer.googleBackground.';
+        // マップを読まずに背景だけ表示するときの設定 (手入力した原点・高さ補正) の保存先
+        const NO_MAP_SETTINGS_NAME = '__no_map__';
+        // デバイスの現在地を原点にしたときの高さ補正の保存先。場所が毎回変わるので復元には使わない。
+        const DEVICE_SETTINGS_NAME = '__device_location__';
+        const MAP_ON_TOP_STORAGE_KEY = 'hokuyoMapViewer.googleBackground.mapOnTop3D';
+
+        /** いまの原点に対応する設定の名前 (高さ補正の保存に使う) */
+        function currentGeoSettingsName() {
+            // デバイスの現在地・検索した場所は毎回場所が変わるので、マップとは別に保存する
+            return (geoOriginSource === 'device' || geoOriginSource === 'search') ? DEVICE_SETTINGS_NAME : geoOriginMapName;
+        }
+
+        function geoSettingsStorageKey(mapName) {
+            return GEO_SETTINGS_PREFIX + (mapName || NO_MAP_SETTINGS_NAME);
+        }
+
+        function readGeoSettings(mapName) {
+            try {
+                return JSON.parse(localStorage.getItem(geoSettingsStorageKey(mapName))) || {};
+            } catch (error) {
+                return {};
+            }
+        }
+
+        function writeGeoSettings(mapName, patch) {
+            try {
+                const settings = { ...readGeoSettings(mapName), ...patch };
+                localStorage.setItem(geoSettingsStorageKey(mapName), JSON.stringify(settings));
+            } catch (error) {
+                // 保存できなくても表示には影響しない (プライベートウィンドウなど)
+            }
+        }
+
+        function setGoogleBgStatus(message, level = 'info') {
+            const el = document.getElementById('google-bg-status');
+            el.textContent = message;
+            el.classList.toggle('hud-error', level === 'error');
+            el.classList.toggle('hud-warning', level === 'warning');
+        }
+
+        function setGeoOriginFields(lat, lon, alt, yawDeg) {
+            const fmt = (v, digits) => (Number.isFinite(v) ? v.toFixed(digits) : '');
+            document.getElementById('geo-origin-lat').value = fmt(lat, 8);
+            document.getElementById('geo-origin-lon').value = fmt(lon, 8);
+            document.getElementById('geo-origin-alt').value = fmt(alt, 2);
+            document.getElementById('geo-origin-yaw').value = fmt(yawDeg ?? 0, 1);
+        }
+
+        function updateGoogleBgControls() {
+            const mode = googleBackground ? googleBackground.mode : 'none';
+            const heightInput = document.getElementById('google-bg-height');
+            heightInput.disabled = mode === 'none';
+            heightInput.value = mode === 'none' ? '' : googleBackground.getHeightOffset(mode).toFixed(2);
+            document.getElementById('google-bg-fit-ground').disabled = mode === 'none';
+            document.getElementById('google-bg-opacity-label').hidden = mode !== '2d';
+            document.getElementById('google-bg-map-on-top-label').hidden = mode !== '3d';
+            document.getElementById('google-bg-mode').value = mode;
+
+            const originEl = document.getElementById('google-bg-origin');
+            if (geoFrame) {
+                let source;
+                if (geoOriginSource === 'device') {
+                    source = 'デバイスの現在地'
+                        + (Number.isFinite(geoOriginAccuracy) ? ` (精度 ±${Math.round(geoOriginAccuracy)} m)` : '');
+                } else if (geoOriginSource === 'search') {
+                    source = `検索した場所${geoOriginLabel ? ` (${geoOriginLabel})` : ''}`;
+                } else if (geoOriginSource === 'manual') {
+                    source = geoOriginMapName ? '手入力' : '手入力 (マップ未ロード)';
+                } else {
+                    source = `data/${geoOriginMapName}/init_lat_lon_alt.txt`;
+                }
+                originEl.textContent = `原点: ${geoFrame.lat.toFixed(7)}, ${geoFrame.lon.toFixed(7)}`
+                    + ` (高度 ${geoFrame.alt.toFixed(1)} m、UTM ${geoFrame.zone}`
+                    + `${geoFrame.yawDeg ? `、方位補正 ${geoFrame.yawDeg}°` : ''}) — ${source}`;
+            } else {
+                originEl.textContent = '原点: 未設定';
+            }
+            updateMapBuildControls();
+            updateMapTuneControls();
+        }
+
+        /** マップの原点を読み込み、Google 背景の座標系にする。
+         *  mapName が空のときは、マップを読まずに手入力した原点 (保存済みなら) を使う。 */
+        async function loadGeoOrigin(mapName, { preferFile = false } = {}) {
+            if (googleBackgroundReady) await googleBackgroundReady;
+            if (!googleBackground) return;
+            const settings = readGeoSettings(mapName);
+            let origin = null;
+            let problem = '';
+
+            if (settings.manualOrigin && !preferFile) {
+                origin = settings.manualOrigin;
+            } else if (!mapName) {
+                // マップも手入力の原点も無い。背景を出すには原点の入力が必要。
+                if (googleBackground.hasApiKey && !geoFrame) {
+                    setGoogleBgStatus('原点が未設定です。マップをロードするか、「原点を手入力する」で緯度経度を入力すると、'
+                        + 'マップが無くても背景を表示できます。', 'info');
+                }
+                return;
+            } else {
+                try {
+                    const response = await fetch(`/geo_origin/${encodeURIComponent(mapName)}`);
+                    const json = await response.json();
+                    if (json.valid) {
+                        origin = { lat: json.lat, lon: json.lon, alt: json.alt, yawDeg: 0 };
+                    } else {
+                        problem = json.message || '原点を読み込めません。';
+                        if (!geoFrame && json.exists) setGeoOriginFields(json.lat, json.lon, json.alt, 0);
+                    }
+                } catch (error) {
+                    problem = `原点を読み込めません: ${error.message}`;
+                }
+            }
+
+            if (!origin) {
+                if (geoFrame && geoOriginMapName !== mapName) {
+                    // 同じ座標系の別ファイル (ウェイポイントだけ等) を読んだ場合は、今の原点を使い続ける
+                    if (googleBackground.hasApiKey) {
+                        const current = geoOriginMapName ? `マップ「${geoOriginMapName}」の原点`
+                            : (geoOriginSource === 'device' ? 'デバイスの現在地の原点' : '手入力した原点');
+                        setGoogleBgStatus(`${mapName}: ${problem} ${current}を使い続けます。`, 'warning');
+                    }
+                    return;
+                }
+                geoFrame = null;
+                geoOriginSource = null;
+                geoOriginMapName = mapName;
+                googleBackground.setFrame(null);
+                await googleBackground.setMode('none');
+                if (googleBackground.hasApiKey) {
+                    setGoogleBgStatus(`${mapName}: ${problem} 背景を重ねるには「原点を手入力する」から入力してください。`, 'warning');
+                }
+                updateGoogleBgControls();
+                return;
+            }
+
+            applyGeoOrigin(origin, {
+                mapName,
+                source: settings.manualOrigin && !preferFile ? 'manual' : 'file',
+                heights: settings,
+            });
+            if (googleBackground.mode === 'none' && googleBackground.hasApiKey) {
+                setGoogleBgStatus('「表示」で背景を選べます。', 'info');
+            }
+        }
+
+        /** 原点を Google 背景の座標系として使う。heights は保存済みの高さ補正 (無ければ既定値)。 */
+        function applyGeoOrigin(origin, { mapName = null, source, accuracy = null, heights = {}, label = null }) {
+            // 選んだ範囲は前の座標系で表しているので、原点が変わったら選び直してもらう
+            if (regionSelector && regionSelector.region && !mapBuildRunning) regionSelector.setRegion(null);
+            geoFrame = new MapGeoFrame(origin);
+            geoOriginMapName = mapName;
+            geoOriginSource = source;
+            geoOriginAccuracy = accuracy;
+            geoOriginLabel = label;
+            setGeoOriginFields(origin.lat, origin.lon, origin.alt, origin.yawDeg);
+            googleBackground.setHeightOffset(heights.height2d ?? DEFAULT_HEIGHT_OFFSET['2d'], '2d');
+            googleBackground.setHeightOffset(heights.height3d ?? DEFAULT_HEIGHT_OFFSET['3d'], '3d');
+            googleBackground.setFrame(geoFrame);
+            placeSearchMarker();
+            updateGoogleBgControls();
+        }
+
+        // ---------------------------------------------------------------------
+        // デバイスの現在地 (ブラウザの位置情報) を原点にする
+        // ---------------------------------------------------------------------
+        function geolocationErrorMessage(error) {
+            switch (error.code) {
+                case 1: return '位置情報の利用が許可されていません。ブラウザのサイト設定で位置情報を許可してください。';
+                case 2: return 'デバイスの現在地を取得できません (位置情報が使えない環境です)。';
+                case 3: return 'デバイスの現在地の取得がタイムアウトしました。';
+                default: return `デバイスの現在地を取得できません: ${error.message}`;
+            }
+        }
+
+        /** maximumAge: この時間 [ms] 以内に取得済みの位置なら使い回す。ボタンで取り直すときは 0。 */
+        function getDevicePosition({ maximumAge = 0 } = {}) {
+            return new Promise((resolve, reject) => {
+                if (!window.isSecureContext) {
+                    // ブラウザの仕様で、位置情報は HTTPS か localhost のページでしか使えない
+                    reject(new Error('デバイスの現在地は、GUI を HTTPS か localhost で開いたときだけ取得できます'
+                        + ' (ブラウザの制限。README の「HTTPS で起動する」を参照)。'));
+                    return;
+                }
+                if (!('geolocation' in navigator)) {
+                    reject(new Error('このブラウザは位置情報に対応していません。'));
+                    return;
+                }
+                navigator.geolocation.getCurrentPosition(
+                    resolve,
+                    (error) => reject(new Error(geolocationErrorMessage(error))),
+                    { enableHighAccuracy: true, timeout: 20000, maximumAge });
+            });
+        }
+
+        /**
+         * デバイスの現在地を原点にする。
+         * automatic: マップを指定せずに開いたときの自動実行。取得中にマップの原点が読み込まれたら
+         *            そちらを優先し、取得できなければ手入力で保存した原点を使う。成功したら 2D 衛星写真を表示する。
+         */
+        async function useDeviceLocationAsOrigin({ automatic = false } = {}) {
+            if (googleBackgroundReady) await googleBackgroundReady;
+            if (!googleBackground) return;
+            const mapOriginLoaded = () => geoOriginMapName !== null || Object.keys(meshRegistry).length > 0;
+            if (automatic && mapOriginLoaded()) return;
+            setGoogleBgStatus('デバイスの現在地を取得しています…', 'info');
+
+            let position;
+            try {
+                position = await getDevicePosition({ maximumAge: automatic ? 10000 : 0 });
+            } catch (error) {
+                if (!automatic) {
+                    setGoogleBgStatus(error.message, 'error');
+                    return;
+                }
+                if (mapOriginLoaded()) return;
+                await loadGeoOrigin(null);
+                setGoogleBgStatus(geoFrame
+                    ? `${error.message} 手入力で保存した原点を使います。`
+                    : `${error.message} 「原点を手入力する」で緯度経度を入力すると背景を表示できます。`, 'warning');
+                return;
+            }
+            if (automatic && mapOriginLoaded()) return;
+
+            const { latitude, longitude, altitude, accuracy } = position.coords;
+            // 高度が取れない端末が多い。3D の高さは読み込み後の自動合わせで補正する。
+            const origin = { lat: latitude, lon: longitude, alt: Number.isFinite(altitude) ? altitude : 0, yawDeg: 0 };
+            // 地図を読んでいる状態で押した場合は、その地図とは別の座標系になるので原点だけ差し替える
+            applyGeoOrigin(origin, { mapName: null, source: 'device', accuracy });
+            const accuracyText = Number.isFinite(accuracy) ? ` (精度 ±${Math.round(accuracy)} m)` : '';
+            setGoogleBgStatus(`デバイスの現在地を原点にしました${accuracyText}。`, 'info');
+
+            if (automatic && googleBackground.hasApiKey && googleBackground.mode === 'none') {
+                await changeGoogleBgMode('2d');
+            } else if (googleBackground.mode === '3d') {
+                scheduleAutoFit3DHeight();
+            }
+        }
+
+        // =====================================================================
+        // ウェイポイントの緯度経度高度
+        // =====================================================================
+        /** いまの原点がこのマップのものか (デバイスの現在地などの別の原点では計算しない) */
+        function canComputeWaypointGnss() {
+            if (!geoFrame) return false;
+            // 地図をロードしていない (地図なしでウェイポイントを作った) ときは、いまの原点 (現在地・検索・手入力) の座標で置いている
+            if (!currentMapName) return true;
+            return geoOriginMapName !== null && geoOriginMapName === currentMapName;
+        }
+
+        /** ウェイポイントの緯度・経度・高度。高度は点群 (無ければ 3D Tiles) の地面の高さから求める。 */
+        function waypointGnss(wp) {
+            if (!canComputeWaypointGnss() || !wp || !wp[0]) return null;
+            const [x, y, z] = wp[0];
+            const ll = geoFrame.mapToLatLon(x, y);
+            let groundZ = null;
+            if (Object.keys(meshRegistry).some(key => key.startsWith('pcd-'))) {
+                groundZ = estimatePointCloudGroundZ(x, y);
+            }
+            if (groundZ === null && googleBackground && googleBackground.mode === '3d') {
+                const surface = googleBackground.surfaceHeightAt(x, y, { maxError: FIT_TILE_MAX_ERROR });
+                if (surface !== null) groundZ = surface - googleBackground.getHeightOffset('3d');
+            }
+            if (groundZ === null) groundZ = z || 0;
+            return {
+                latitude: Number(ll.lat.toFixed(10)),
+                longitude: Number(ll.lon.toFixed(10)),
+                altitude: Number((geoFrame.alt + groundZ).toFixed(3)),
+            };
+        }
+
+        // =====================================================================
+        // 範囲から地図を作る (Google 3D Tiles のメッシュ -> PCD / PGM)
+        // =====================================================================
+        const MAP_NAME_PATTERN = /^[A-Za-z0-9_.-]+$/;
+        const MIN_REGION_SIDE = 5;
+        const MAX_REGION_SIDE = 400;
+
+        function setMapBuildStatus(message, level = 'info') {
+            const el = document.getElementById('gmb-status');
+            el.textContent = message;
+            el.classList.toggle('hud-error', level === 'error');
+            el.classList.toggle('hud-warning', level === 'warning');
+        }
+
+        function regionProblem(box) {
+            if (!box) return '範囲を選んでください。';
+            const size = box.getSize(new THREE.Vector2());
+            if (size.x < MIN_REGION_SIDE || size.y < MIN_REGION_SIDE) return `範囲が小さすぎます (1 辺 ${MIN_REGION_SIDE} m 以上)。`;
+            if (size.x > MAX_REGION_SIDE || size.y > MAX_REGION_SIDE) return `範囲が大きすぎます (1 辺 ${MAX_REGION_SIDE} m まで)。`;
+            return null;
+        }
+
+        function updateMapBuildControls() {
+            const fieldset = document.getElementById('google-map-build-fieldset');
+            const available = Boolean(googleBackground) && googleBackground.mode !== 'none' && Boolean(geoFrame);
+            fieldset.hidden = !available;
+            if (regionSelector) {
+                regionSelector.outline.visible = available && Boolean(regionSelector.region);
+            }
+            const region = regionSelector ? regionSelector.region : null;
+            const name = document.getElementById('gmb-name').value.trim();
+            document.getElementById('gmb-select').disabled = mapBuildRunning;
+            document.getElementById('gmb-create').disabled = mapBuildRunning || !available
+                || regionProblem(region) !== null || !MAP_NAME_PATTERN.test(name);
+            document.getElementById('gmb-cancel').hidden = !mapBuildRunning;
+
+            const regionEl = document.getElementById('gmb-region');
+            if (!region || !geoFrame) {
+                regionEl.textContent = '範囲: 未選択';
+                return;
+            }
+            const size = region.getSize(new THREE.Vector2());
+            const center = region.getCenter(new THREE.Vector2());
+            const ll = geoFrame.mapToLatLon(center.x, center.y);
+            const problem = regionProblem(region);
+            regionEl.textContent = `範囲: ${size.x.toFixed(1)} m × ${size.y.toFixed(1)} m、中心 ${ll.lat.toFixed(7)}, ${ll.lon.toFixed(7)}`
+                + (problem ? ` — ${problem}` : '');
+            regionEl.classList.toggle('hud-warning', Boolean(problem));
+        }
+
+        function readNumberInput(id, label, { min = -Infinity } = {}) {
+            const value = parseFloat(document.getElementById(id).value);
+            if (!Number.isFinite(value) || value < min) throw new Error(`${label} の値が不正です。`);
+            return value;
+        }
+
+        /** ロード中の PCD / PGM / ウェイポイントをすべて片付ける (別の座標系の地図に切り替えるため) */
+        function unloadAllMapComponents() {
+            Object.keys(meshRegistry).forEach((key) => {
+                const type = ['pcd', 'pgm', 'waypoints'].find(t => key.startsWith(`${t}-`));
+                if (type && meshRegistry[key]) unloadMap(type, key.slice(type.length + 1));
+            });
+        }
+
+        /** 保存したウェイポイントをロード画面の選択肢に足す */
+        function addWaypointsToLoadDialog(name) {
+            const select = document.getElementById('wp-select');
+            if ([...select.options].some(option => option.value === name)) return;
+            const option = document.createElement('option');
+            option.value = name;
+            option.textContent = name;
+            select.appendChild(option);
+        }
+
+        /** 作った地図をロード画面の選択肢に足す (ロード画面はページを開いたときの一覧のため) */
+        function addMapToLoadDialog(mapName) {
+            ['pcd-select', 'pgm-select'].forEach((id) => {
+                const select = document.getElementById(id);
+                if ([...select.options].some(option => option.value === mapName)) return;
+                const option = document.createElement('option');
+                option.value = mapName;
+                option.textContent = mapName;
+                select.appendChild(option);
+            });
+        }
+
+        async function createMapFromGoogle() {
+            if (mapBuildRunning) return;
+            let meta;
+            let bounds;
+            let center;
+            let spacing;
+            try {
+                const mapName = document.getElementById('gmb-name').value.trim();
+                if (!MAP_NAME_PATTERN.test(mapName)) throw new Error('マップ名は半角英数字と _ . - で入力してください。');
+                const region = regionSelector.region;
+                const problem = regionProblem(region);
+                if (problem) throw new Error(problem);
+                spacing = readNumberInput('gmb-spacing', '点群の点の間隔', { min: 0.02 });
+                const resolution = readNumberInput('gmb-resolution', 'PGM の解像度', { min: 0.01 });
+                const obstacleMin = readNumberInput('gmb-obstacle-min', '障害物の高さ (下限)');
+                const obstacleMax = readNumberInput('gmb-obstacle-max', '障害物の高さ (上限)');
+                const groundWindow = readNumberInput('gmb-ground-window', '地面の高さを探す範囲', { min: 1 });
+                if (obstacleMax <= obstacleMin) throw new Error('障害物の高さは 上限 > 下限 にしてください。');
+
+                // 範囲の中心を新しい地図の原点にする。範囲の 4 隅は、中心を原点にした UTM の座標に直す
+                // (いまの表示の原点が別の場所でも、緯度経度を経由するので正しく変換される)。
+                const regionCenter = region.getCenter(new THREE.Vector2());
+                center = geoFrame.mapToLatLon(regionCenter.x, regionCenter.y);
+                const newFrame = new MapGeoFrame({ lat: center.lat, lon: center.lon, alt: 0 });
+                bounds = new THREE.Box2();
+                [[region.min.x, region.min.y], [region.max.x, region.min.y],
+                 [region.max.x, region.max.y], [region.min.x, region.max.y]].forEach(([x, y]) => {
+                    const ll = geoFrame.mapToLatLon(x, y);
+                    const p = newFrame.latLonToMap(ll.lat, ll.lon);
+                    bounds.expandByPoint(new THREE.Vector2(p.x, p.y));
+                });
+                const size = bounds.getSize(new THREE.Vector2());
+                // 地面だけでも面積 / 間隔^2 点。壁や屋根のぶん多めに見積もる
+                const estimated = size.x * size.y / (spacing * spacing) * 1.5;
+                if (estimated > MAX_EXTRACTED_POINTS) {
+                    throw new Error(`点が多くなりすぎます (見込み約 ${Math.round(estimated / 1e4)} 万点、上限 ${MAX_EXTRACTED_POINTS / 1e4} 万点)。`
+                        + '点の間隔を広げるか、範囲を狭めてください。');
+                }
+                if (pgmEdit && pgmEdit.dirty
+                    && !confirm('2Dマップの編集が保存されていません。作った地図に切り替えると編集は失われます。続けますか？')) {
+                    return;
+                }
+                meta = {
+                    map_name: mapName,
+                    source_type: 'google_3d_tiles',
+                    // 1 点 16 バイト (x, y, z と色)。カラー点群の PCD にする
+                    point_format: 'xyzrgb',
+                    overwrite: document.getElementById('gmb-overwrite').checked,
+                    bounds: { min_x: bounds.min.x, min_y: bounds.min.y, max_x: bounds.max.x, max_y: bounds.max.y },
+                    pgm: {
+                        resolution, obstacle_min: obstacleMin, obstacle_max: obstacleMax,
+                        ground_window: groundWindow, point_spacing: spacing,
+                    },
+                    // 初期位置は範囲の中心 (地図の原点) に向き 0 で置く。作った後に「初期位置」パネルで変えられる
+                    init_pose: { x: 0, y: 0, yaw: 0 },
+                };
+            } catch (error) {
+                setMapBuildStatus(error.message, 'error');
+                return;
+            }
+
+            mapBuildRunning = true;
+            mapBuildCancelled = false;
+            updateMapBuildControls();
+            const startedAt = performance.now();
+            try {
+                const result = await extractGoogleMeshPoints({
+                    apiKey: googleBackground.apiKey,
+                    dracoDecoderPath: DRACO_DECODER_PATH,
+                    lat: center.lat,
+                    lon: center.lon,
+                    bounds,
+                    spacing,
+                    onProgress: message => setMapBuildStatus(message),
+                    isCancelled: () => mapBuildCancelled,
+                });
+                if (mapBuildCancelled) throw new Error('中止しました。');
+                meta.origin = { lat: center.lat, lon: center.lon, alt: result.alt };
+                setMapBuildStatus(`点群 ${result.count.toLocaleString()} 点から地図を作って保存しています…`);
+                const response = await fetch(`/create_map_from_points?meta=${encodeURIComponent(JSON.stringify(meta))}`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/octet-stream' },
+                    body: packPointsWithColors(result.points, result.colors),
+                });
+                let json = {};
+                try {
+                    json = await response.json();
+                } catch (error) {
+                    // サーバーが JSON 以外を返した (容量超過など)
+                }
+                if (!response.ok || json.status !== 'success') {
+                    throw new Error(json.message || `地図を保存できませんでした (HTTP ${response.status})。`);
+                }
+
+                // 作った地図 (範囲の中心が原点) に切り替え、初期位置とウェイポイントを編集できるようにする
+                addMapToLoadDialog(meta.map_name);
+                regionSelector.setRegion(null);
+                unloadAllMapComponents();
+                await executeMapLoading(meta.map_name, true, true, false);
+                const seconds = Math.round((performance.now() - startedAt) / 1000);
+                setMapBuildStatus(`地図「${meta.map_name}」を作りました (点群 ${result.count.toLocaleString()} 点、`
+                    + `PGM ${json.pgm.width}×${json.pgm.height} 画素、原点の高度 ${result.alt.toFixed(2)} m、${seconds} 秒)。`
+                    + (result.timedOut ? '一部のタイルは時間内に読み込めなかったため、欠けている所があるかもしれません。' : '')
+                    + '初期位置は範囲の中心 (向き 0°) にしてあります。「初期位置」パネルとウェイポイント編集で編集して保存してください。',
+                    result.timedOut ? 'warning' : 'info');
+            } catch (error) {
+                console.error('範囲から地図を作れませんでした:', error);
+                setMapBuildStatus(error.message, 'error');
+            } finally {
+                mapBuildRunning = false;
+                updateMapBuildControls();
+            }
+        }
+
+        function initMapBuilder() {
+            regionSelector = new RegionSelector({
+                scene, camera,
+                domElement: renderer.domElement,
+                // 2D 衛星写真の上では写真の高さ、それ以外は地図の z=0 の平面で範囲を決める
+                getPlaneZ: () => (googleBackground && googleBackground.mode === '2d'
+                    ? googleBackground.getHeightOffset('2d') : 0),
+                onChange: (box, dragging) => {
+                    updateMapBuildControls();
+                    if (!dragging && box) {
+                        const problem = regionProblem(box);
+                        setMapBuildStatus(problem || '範囲を選びました。マップ名を入れて「PCD・PGM を作成して保存」を押してください。',
+                            problem ? 'warning' : 'info');
+                    }
+                },
+            });
+            document.getElementById('gmb-select').addEventListener('click', () => {
+                // クリックの意味が重ならないよう、ほかの指定モードは解除する
+                if (isAddingWaypointMode) toggleAddWaypointMode(null);
+                if (isPickingInitialPose) togglePickInitialPose();
+                clearPgmBrush();
+                stopWaypointTools();
+                if (cropSelector) cropSelector.setActive(false);
+                regionSelector.setActive(true);
+                setMapBuildStatus('地図の上を左ドラッグして範囲を選んでください (Esc で中止)。');
+            });
+            document.getElementById('gmb-name').addEventListener('input', updateMapBuildControls);
+            document.getElementById('gmb-create').addEventListener('click', createMapFromGoogle);
+            document.getElementById('gmb-cancel').addEventListener('click', () => {
+                mapBuildCancelled = true;
+                setMapBuildStatus('中止しています…', 'warning');
+            });
+            updateMapBuildControls();
+        }
+
+        // =====================================================================
+        // 地図のパラメータ調整 (作った PCD / PGM を、設定を変えて作り直す)
+        // ---------------------------------------------------------------------
+        // サーバーに残してある元の点群 (data/<マップ名>/source_points.pcd、無ければ map/<マップ名>.pcd) と
+        // 設定から作り直す。プレビューは表示だけを差し替え、保存したときにファイルを書き換える。
+        // =====================================================================
+        const CROP_OUTLINE_COLOR = 0x4da6ff;
+        const MAP_TUNE_INPUT_IDS = ['mt-spacing', 'mt-z-min', 'mt-z-max', 'mt-resolution', 'mt-obstacle-min',
+                                    'mt-obstacle-max', 'mt-ground-window', 'mt-inflate', 'mt-height-reference'];
+
+        function setMapTuneStatus(message, level = 'info') {
+            const el = document.getElementById('mt-status');
+            el.textContent = message;
+            el.classList.toggle('hud-error', level === 'error');
+            el.classList.toggle('hud-warning', level === 'warning');
+        }
+
+        function loadedPointCloudName() {
+            const key = Object.keys(meshRegistry).find(k => k.startsWith('pcd-'));
+            return key ? key.slice('pcd-'.length) : null;
+        }
+
+        /** 点群をロード / アンロードしたときに、調整する地図を切り替える */
+        async function refreshMapTune() {
+            const fieldset = document.getElementById('map-tune-fieldset');
+            const name = loadedPointCloudName();
+            if (!name) {
+                mapTune = null;
+                fieldset.hidden = true;
+                updateZRangePlanes();
+                if (cropSelector) {
+                    cropSelector.setActive(false);
+                    cropSelector.setRegion(null);
+                }
+                return;
+            }
+            if (mapTune && mapTune.mapName === name) return;
+            mapTune = {
+                mapName: name,
+                info: null,
+                // Google から取り直して未保存の点群を元にするか
+                usePending: false,
+                // 最後にプレビューした設定 (点群を作り直す必要があるかの判断に使う)
+                pcdPreviewKey: null,
+            };
+            fieldset.hidden = false;
+            document.getElementById('mt-save-name').value = name;
+            updatePointCloudZStats();
+            if (cropSelector) cropSelector.setRegion(null);
+            setMapTuneStatus('');
+            updateMapTuneControls();
+            await loadMapTuneInfo();
+        }
+
+        async function loadMapTuneInfo({ fillFields = true } = {}) {
+            const tune = mapTune;
+            if (!tune) return;
+            try {
+                const response = await fetch(`/map_params/${encodeURIComponent(tune.mapName)}`, { cache: 'no-store' });
+                const json = await response.json();
+                if (mapTune !== tune) return;   // 読み込み中に別の地図に切り替わった
+                if (json.status !== 'success') throw new Error(json.message || `HTTP ${response.status}`);
+                tune.info = json;
+                if (fillFields) fillMapTuneFields(json);
+            } catch (error) {
+                if (mapTune !== tune) return;
+                setMapTuneStatus(`地図の設定を読み込めません: ${error.message}`, 'error');
+            }
+            updateMapTuneControls();
+        }
+
+        function fillMapTuneFields(info) {
+            const set = (id, value) => {
+                document.getElementById(id).value = (value === null || value === undefined) ? '' : String(value);
+            };
+            set('mt-spacing', info.pcd.spacing || 0);
+            set('mt-z-min', info.pcd.z_min);
+            set('mt-z-max', info.pcd.z_max);
+            set('mt-resolution', info.pgm.resolution);
+            set('mt-obstacle-min', info.pgm.obstacle_min);
+            set('mt-obstacle-max', info.pgm.obstacle_max);
+            set('mt-ground-window', info.pgm.ground_window);
+            set('mt-inflate', info.pgm.inflate);
+            // 高さの基準を保存していない (この設定ができる前に作った) 地図は、PCD の z 座標で指定する
+            document.getElementById('mt-height-reference').value = info.pgm.height_reference || 'pcd_z';
+            mapTune.legacyGroundReference = !info.pgm.height_reference && info.has_saved_params;
+            updateHeightReferenceUi();
+            const crop = info.pcd.crop;
+            // 保存してある範囲を戻すだけなので、「範囲を選びました」は出さない
+            cropSelector.restoring = true;
+            cropSelector.setRegion(crop
+                ? new THREE.Box2(new THREE.Vector2(crop.min_x, crop.min_y), new THREE.Vector2(crop.max_x, crop.max_y))
+                : null);
+            cropSelector.restoring = false;
+        }
+
+        function describeMapTuneSource() {
+            const info = mapTune.info;
+            const source = mapTune.usePending ? info.pending_source : info.source;
+            const kind = { google_3d_tiles: 'Google 3D Tiles から取得', pcd: 'ロードした PCD そのもの' }[source.type] || '点群';
+            const details = [];
+            if (source.has_color) details.push('カラー');
+            if (source.spacing > 0) details.push(`点の間隔 ${source.spacing} m`);
+            if (source.region) {
+                details.push(`範囲 ${(source.region.max_x - source.region.min_x).toFixed(1)} m × `
+                    + `${(source.region.max_y - source.region.min_y).toFixed(1)} m`);
+            }
+            const file = mapTune.usePending ? '取り直した点群 (未保存)' : info.source.file;
+            let text = `元の点群: ${file} — ${kind}${details.length ? ` (${details.join('、')})` : ''}。`;
+            if (!info.has_saved_params) text += ' 作成時の設定が保存されていない地図なので、既定値から始めます。';
+            return text;
+        }
+
+        function updateMapTuneControls() {
+            if (!mapTune) return;
+            const info = mapTune.info;
+            document.getElementById('mt-source').textContent = info ? describeMapTuneSource() : '地図の設定を読み込んでいます…';
+            const canRefetch = Boolean(info && info.source.type === 'google_3d_tiles' && info.origin
+                && googleBackground && googleBackground.hasApiKey);
+            document.getElementById('mt-refetch-details').hidden = !canRefetch;
+            const usePendingButton = document.getElementById('mt-use-pending');
+            usePendingButton.hidden = !(info && info.pending_source && !mapTune.usePending);
+            ['mt-preview', 'mt-save', 'mt-revert', 'mt-crop-select', 'mt-crop-clear', 'mt-refetch', 'mt-use-pending']
+                .forEach((id) => { document.getElementById(id).disabled = mapTuneBusy || !info; });
+            if (mapBuildRunning) document.getElementById('mt-refetch').disabled = true;
+            document.getElementById('mt-refetch-cancel').hidden = !mapTuneRefetching;
+
+            const crop = cropSelector ? cropSelector.region : null;
+            const cropEl = document.getElementById('mt-crop');
+            if (crop) {
+                const size = crop.getSize(new THREE.Vector2());
+                cropEl.textContent = `残す範囲: x ${crop.min.x.toFixed(1)}〜${crop.max.x.toFixed(1)} m、`
+                    + `y ${crop.min.y.toFixed(1)}〜${crop.max.y.toFixed(1)} m (${size.x.toFixed(1)} m × ${size.y.toFixed(1)} m)`;
+            } else {
+                cropEl.textContent = '残す範囲: 全体';
+            }
+        }
+
+        /** 入力欄の設定をサーバーに送る形にする。値が不正なら例外。 */
+        function readMapTuneParams() {
+            const optional = (id, label) => {
+                const text = document.getElementById(id).value.trim();
+                if (text === '') return null;
+                const value = Number(text);
+                if (!Number.isFinite(value)) throw new Error(`${label} の値が不正です。`);
+                return value;
+            };
+            const round = v => Number(v.toFixed(3));
+            const crop = cropSelector ? cropSelector.region : null;
+            const params = {
+                pcd: {
+                    spacing: readNumberInput('mt-spacing', '点の間隔', { min: 0 }),
+                    crop: crop ? { min_x: round(crop.min.x), min_y: round(crop.min.y),
+                                   max_x: round(crop.max.x), max_y: round(crop.max.y) } : null,
+                    z_min: optional('mt-z-min', '残す高さ (下限)'),
+                    z_max: optional('mt-z-max', '残す高さ (上限)'),
+                },
+                pgm: {
+                    resolution: readNumberInput('mt-resolution', 'PGM の解像度', { min: 0.01 }),
+                    obstacle_min: readNumberInput('mt-obstacle-min', '障害物の高さ (下限)'),
+                    obstacle_max: readNumberInput('mt-obstacle-max', '障害物の高さ (上限)'),
+                    ground_window: readNumberInput('mt-ground-window', '地面の高さを探す範囲', { min: 1 }),
+                    inflate: readNumberInput('mt-inflate', '障害物を太らせる幅', { min: 0 }),
+                    height_reference: document.getElementById('mt-height-reference').value,
+                },
+                use_pending_source: mapTune.usePending,
+            };
+            if (params.pcd.z_min !== null && params.pcd.z_max !== null && params.pcd.z_max <= params.pcd.z_min) {
+                throw new Error('残す高さは 上限 > 下限 にしてください。');
+            }
+            if (params.pgm.obstacle_max <= params.pgm.obstacle_min) {
+                throw new Error(params.pgm.height_reference === 'pcd_z'
+                    ? '障害物とみなす z の範囲は 上限 > 下限 にしてください。'
+                    : '障害物とみなす高さは 上限 > 下限 にしてください。');
+            }
+            return params;
+        }
+
+        async function readErrorMessage(response) {
+            try {
+                const json = await response.json();
+                if (json && json.message) return json.message;
+            } catch (error) {
+                // JSON 以外 (容量超過など)
+            }
+            return `HTTP ${response.status}`;
+        }
+
+        async function fetchMapTunePreview(mapName, what, params) {
+            const url = `/map_params/${encodeURIComponent(mapName)}/preview?what=${what}`
+                + `&meta=${encodeURIComponent(JSON.stringify(params))}`;
+            const response = await fetch(url, { method: 'POST', cache: 'no-store' });
+            if (!response.ok) throw new Error(await readErrorMessage(response));
+            const header = response.headers.get('X-Map-Info');
+            return {
+                buffer: await response.arrayBuffer(),
+                info: header ? JSON.parse(decodeURIComponent(header)) : {},
+            };
+        }
+
+        /** 表示中の点群の中身だけを差し替える (カメラや表示の切り替えはそのまま) */
+        function replacePointCloud(mapName, buffer) {
+            const cloud = meshRegistry[`pcd-${mapName}`];
+            if (!cloud) return;
+            const parsed = pcdLoader.parse(buffer);
+            cloud.geometry.dispose();
+            cloud.geometry = parsed.geometry;
+            // 色の有無が変わることがある (カラー点群から作り直したときなど)
+            const hasColor = Boolean(parsed.geometry.attributes.color);
+            if (cloud.material.vertexColors !== hasColor) {
+                cloud.material.vertexColors = hasColor;
+                cloud.material.needsUpdate = true;
+            }
+            parsed.material.dispose();
+            cloud.geometry.computeBoundingSphere();
+        }
+
+        /** 表示中の 2D マップを差し替える。透過度とアンロード用の名前は引き継ぐ。 */
+        function replacePgmLayer(pgmResult, info) {
+            const layerName = pgmEdit ? pgmEdit.layerName
+                : (Object.keys(meshRegistry).find(k => k.startsWith('pgm-')) || `pgm-${mapTune.mapName}`).slice('pgm-'.length);
+            const previous = meshRegistry[`pgm-${layerName}`];
+            const opacity = previous ? previous.material.opacity : 1.0;
+            unloadMap('pgm', layerName);
+            createPgmLayer(layerName, pgmResult, info, { opacity });
+            onPgmLoaded(layerName);
+            return layerName;
+        }
+
+        // ---------------------------------------------------------------------
+        // 障害物とみなす高さの基準 (PCD の z 座標 / 場所ごとの地面からの高さ)
+        // ---------------------------------------------------------------------
+        let zRangeGroup = null;
+
+        function updateHeightReferenceUi() {
+            const pcdZ = document.getElementById('mt-height-reference').value === 'pcd_z';
+            document.getElementById('mt-obstacle-min-label').textContent = pcdZ
+                ? '障害物とみなす z の範囲 (下限) [m]:' : '障害物とみなす地面からの高さ (下限) [m]:';
+            document.getElementById('mt-obstacle-max-label').textContent = pcdZ
+                ? '障害物とみなす z の範囲 (上限) [m]:' : '障害物とみなす地面からの高さ (上限) [m]:';
+            document.getElementById('mt-ground-window-label').hidden = pcdZ;
+            document.getElementById('mt-show-z-range-label').hidden = !pcdZ;
+            let help = pcdZ
+                ? 'PCD の z 座標がこの範囲にある点を障害物にします (地図の原点の高さが z=0)。坂や段差があると、高い所の地面まで障害物になります。'
+                : '場所ごとに、まわり (地面の高さを探す範囲) の最も低い点を地面とし、そこからこの高さにある点を障害物にします。坂や段差があっても地面は障害物になりません。';
+            if (pcdZ && mapTune && mapTune.legacyGroundReference) {
+                help += ' この地図は、作ったときは地面からの高さで PGM を作っています (保存するとこの設定に変わります)。';
+            }
+            document.getElementById('mt-height-help').textContent = help;
+            updateZRangePlanes();
+        }
+
+        function loadedPointCloud() {
+            const name = loadedPointCloudName();
+            return name ? meshRegistry[`pcd-${name}`] : null;
+        }
+
+        /** 表示中の点群の z の分布を出す (範囲を決める目安)。点が多いときは間引いて数える。 */
+        function updatePointCloudZStats() {
+            const el = document.getElementById('mt-z-stats');
+            const cloud = loadedPointCloud();
+            const position = cloud && cloud.geometry.attributes.position;
+            if (!position || position.count === 0) {
+                el.textContent = '';
+                return;
+            }
+            const stride = Math.max(1, Math.ceil(position.count / 400000));
+            const zs = new Float32Array(Math.ceil(position.count / stride));
+            let n = 0;
+            for (let i = 0; i < position.count; i += stride) {
+                const z = position.getZ(i);
+                if (Number.isFinite(z)) zs[n++] = z;
+            }
+            const sorted = zs.subarray(0, n).sort();
+            const at = p => sorted[Math.min(n - 1, Math.max(0, Math.round((n - 1) * p)))];
+            const f = v => v.toFixed(2);
+            el.textContent = `表示中の PCD の z: 最小 ${f(at(0))} / 5% ${f(at(0.05))} / 中央 ${f(at(0.5))}`
+                + ` / 95% ${f(at(0.95))} / 最大 ${f(at(1))} m (地面は下位 5% 付近)`;
+            updateZRangePlanes();
+        }
+
+        /** PCD の z 座標で指定するとき、範囲の下限と上限を点群の広さの半透明の面で見せる */
+        function updateZRangePlanes() {
+            if (!scene) return;
+            if (!zRangeGroup) {
+                zRangeGroup = new THREE.Group();
+                zRangeGroup.name = 'pgm-z-range';
+                scene.add(zRangeGroup);
+            }
+            while (zRangeGroup.children.length > 0) {
+                const child = zRangeGroup.children[0];
+                zRangeGroup.remove(child);
+                child.geometry.dispose();
+                child.material.dispose();
+            }
+            const cloud = loadedPointCloud();
+            const show = Boolean(mapTune && cloud && cloud.visible)
+                && !document.getElementById('map-tune-fieldset').hidden
+                && document.getElementById('mt-height-reference').value === 'pcd_z'
+                && document.getElementById('mt-show-z-range').checked;
+            const lower = parseFloat(document.getElementById('mt-obstacle-min').value);
+            const upper = parseFloat(document.getElementById('mt-obstacle-max').value);
+            if (!show || !Number.isFinite(lower) || !Number.isFinite(upper)) return;
+            if (!cloud.geometry.boundingBox) cloud.geometry.computeBoundingBox();
+            const box = cloud.geometry.boundingBox;
+            const width = box.max.x - box.min.x;
+            const depth = box.max.y - box.min.y;
+            if (!(width > 0 && depth > 0)) return;
+            [[lower, 0x00c8ff], [upper, 0xff7a00]].forEach(([z, color]) => {
+                const plane = new THREE.Mesh(new THREE.PlaneGeometry(width, depth),
+                    new THREE.MeshBasicMaterial({ color, transparent: true, opacity: 0.15, depthWrite: false, side: THREE.DoubleSide }));
+                plane.position.set((box.min.x + box.max.x) / 2, (box.min.y + box.max.y) / 2, z);
+                zRangeGroup.add(plane);
+                const edge = new THREE.LineLoop(new THREE.BufferGeometry().setFromPoints([
+                    new THREE.Vector3(box.min.x, box.min.y, z), new THREE.Vector3(box.max.x, box.min.y, z),
+                    new THREE.Vector3(box.max.x, box.max.y, z), new THREE.Vector3(box.min.x, box.max.y, z),
+                ]), new THREE.LineBasicMaterial({ color }));
+                zRangeGroup.add(edge);
+            });
+        }
+
+        /** 設定を変えた PCD と PGM を表示する (ファイルは変えない)。成功したら true。 */
+        async function previewMapTune() {
+            if (!mapTune || !mapTune.info || mapTuneBusy) return false;
+            let params;
+            try {
+                params = readMapTuneParams();
+            } catch (error) {
+                setMapTuneStatus(error.message, 'error');
+                return false;
+            }
+            const key = JSON.stringify(params);
+            // プレビューを作り直すだけなら確認しない。ファイルの状態から手で直した分や、プレビューの上から直した分は失われるので確認する
+            const hasHandEdits = pgmEdit && pgmEdit.dirty && (!pgmEdit.tuneUnsaved || pgmEdit.editedSinceTune);
+            if (hasHandEdits && pgmEdit.tuneKey !== key
+                && !confirm('2Dマップに保存していない変更があります。作り直すと失われます。続けますか？')) {
+                return false;
+            }
+
+            const tune = mapTune;
+            mapTuneBusy = true;
+            updateMapTuneControls();
+            try {
+                const pcdKey = JSON.stringify([params.pcd, params.use_pending_source]);
+                if (tune.pcdPreviewKey !== pcdKey) {
+                    setMapTuneStatus('点群を作り直しています…');
+                    const { buffer } = await fetchMapTunePreview(tune.mapName, 'pcd', params);
+                    if (mapTune !== tune) return false;
+                    replacePointCloud(tune.mapName, buffer);
+                    tune.pcdPreviewKey = pcdKey;
+                    updatePointCloudZStats();
+                }
+                setMapTuneStatus('2Dマップを作り直しています…');
+                const { buffer, info } = await fetchMapTunePreview(tune.mapName, 'pgm', params);
+                if (mapTune !== tune) return false;
+                replacePgmLayer(await parsePGM(buffer), info.map_info);
+                pgmEdit.tuneKey = key;
+                pgmEdit.tuneUnsaved = true;
+                pgmEdit.dirty = true;
+                setPgmEditStatus('パラメータ調整のプレビューです（未保存）。ブラシで直した分も一緒に保存されます。', 'hud-warning');
+                setMapTuneStatus(`プレビュー: 点群 ${info.points.toLocaleString()} 点 (元の点群 ${info.source_points.toLocaleString()} 点)、`
+                    + `PGM ${info.pgm_stats.width}×${info.pgm_stats.height} 画素 (障害物 ${info.pgm_stats.occupied_cells.toLocaleString()} 画素)。`
+                    + '保存するまでファイルは変わりません。', 'warning');
+                return true;
+            } catch (error) {
+                console.error('地図を作り直せませんでした:', error);
+                setMapTuneStatus(`作り直せませんでした: ${error.message}`, 'error');
+                return false;
+            } finally {
+                mapTuneBusy = false;
+                updateMapTuneControls();
+            }
+        }
+
+        async function saveMapTune() {
+            if (!mapTune || !mapTune.info || mapTuneBusy) return;
+            let params;
+            try {
+                params = readMapTuneParams();
+            } catch (error) {
+                setMapTuneStatus(error.message, 'error');
+                return;
+            }
+            const saveAs = document.getElementById('mt-save-name').value.trim();
+            if (!MAP_NAME_PATTERN.test(saveAs)) {
+                setMapTuneStatus('保存するマップ名は半角英数字と _ . - で入力してください。', 'error');
+                return;
+            }
+            const tune = mapTune;
+            const sameName = saveAs === tune.mapName;
+            if (sameName && !confirm(`map/${saveAs}.pcd・.pgm・.yaml を今の設定で書き換えます。`
+                + `元の点群は data/${saveAs}/source_points.pcd に残るので、あとから作り直せます。よろしいですか？`)) {
+                return;
+            }
+            // 画面に出ている内容と保存する内容をそろえるため、設定を変えていたら先にプレビューする
+            const key = JSON.stringify(params);
+            if (!pgmEdit || pgmEdit.tuneKey !== key) {
+                if (!(await previewMapTune())) return;
+            }
+
+            mapTuneBusy = true;
+            updateMapTuneControls();
+            setMapTuneStatus('保存しています…');
+            try {
+                const meta = { ...params, save_as: saveAs, overwrite: document.getElementById('mt-overwrite').checked };
+                const response = await fetch(
+                    `/map_params/${encodeURIComponent(tune.mapName)}/save?meta=${encodeURIComponent(JSON.stringify(meta))}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/octet-stream' },
+                        // ブラシで直した分も含めた、表示中の 2D マップの画素
+                        body: pgmEdit.gray,
+                    });
+                let json = {};
+                try {
+                    json = await response.json();
+                } catch (error) {
+                    // JSON 以外
+                }
+                if (!response.ok || json.status !== 'success') throw new Error(json.message || `HTTP ${response.status}`);
+
+                pgmEdit.originalGray = new Uint8Array(pgmEdit.gray);
+                pgmEdit.dirty = false;
+                pgmEdit.tuneUnsaved = false;
+                // 表示中の 2D マップは保存先の YAML と一致するので、「2Dマップを保存」はそちらを引き継ぐ
+                pgmEdit.mapName = json.map_name;
+                document.getElementById('pgm-save-name').value = json.map_name;
+                setPgmEditStatus('');
+                addMapToLoadDialog(json.map_name);
+                if (sameName && params.use_pending_source) {
+                    // 取り直した点群が、この地図の元の点群になった
+                    tune.usePending = false;
+                    const savedParams = { ...params, use_pending_source: false };
+                    pgmEdit.tuneKey = JSON.stringify(savedParams);
+                    tune.pcdPreviewKey = JSON.stringify([savedParams.pcd, false]);
+                }
+                if (sameName) await loadMapTuneInfo({ fillFields: false });
+                setMapTuneStatus(json.message + (sameName ? '' : ' 別名の地図は「ロード」から開けます。'));
+            } catch (error) {
+                console.error('地図を保存できませんでした:', error);
+                setMapTuneStatus(`保存できませんでした: ${error.message}`, 'error');
+            } finally {
+                mapTuneBusy = false;
+                updateMapTuneControls();
+            }
+        }
+
+        /** 設定欄と表示を、保存してあるファイルの状態に戻す */
+        async function revertMapTune() {
+            if (!mapTune || mapTuneBusy) return;
+            if (pgmEdit && pgmEdit.dirty
+                && !confirm('保存していない変更 (プレビューや 2D マップのブラシ編集) を破棄します。よろしいですか？')) {
+                return;
+            }
+            const tune = mapTune;
+            tune.usePending = false;
+            mapTuneBusy = true;
+            updateMapTuneControls();
+            try {
+                await loadMapTuneInfo();
+                if (tune.pcdPreviewKey !== null) {
+                    const response = await fetch(`/map/${encodeURIComponent(tune.mapName)}.pcd`, { cache: 'no-cache' });
+                    if (!response.ok) throw new Error(`map/${tune.mapName}.pcd を読めません (HTTP ${response.status})。`);
+                    replacePointCloud(tune.mapName, await response.arrayBuffer());
+                    tune.pcdPreviewKey = null;
+                    updatePointCloudZStats();
+                }
+                if (pgmEdit && (pgmEdit.tuneKey !== null || pgmEdit.dirty)) {
+                    const name = pgmEdit.tuneUnsaved ? pgmEdit.layerName : pgmEdit.mapName;
+                    const response = await fetch(`/map/${encodeURIComponent(name)}.yaml`, { cache: 'no-cache' });
+                    if (response.ok) {
+                        const info = jsyaml.load(await response.text());
+                        replacePgmLayer(await parsePGM(`/map/${info.image}`), info);
+                        pgmEdit.mapName = name;
+                    } else {
+                        unloadMap('pgm', pgmEdit.layerName);
+                    }
+                }
+                setMapTuneStatus('保存済みの状態に戻しました。');
+            } catch (error) {
+                setMapTuneStatus(`戻せませんでした: ${error.message}`, 'error');
+            } finally {
+                mapTuneBusy = false;
+                updateMapTuneControls();
+            }
+        }
+
+        /** Google 3D Tiles から元の点群を取り直す (保存するまでは今の地図ファイルを変えない) */
+        async function refetchMapTuneSource() {
+            const tune = mapTune;
+            const info = tune && tune.info;
+            if (!info || mapTuneBusy || mapBuildRunning) return;
+            let spacing;
+            let region;
+            try {
+                spacing = readNumberInput('mt-spacing', '点の間隔', { min: 0.02 });
+                const crop = cropSelector.region;
+                const r = crop
+                    ? { min_x: crop.min.x, min_y: crop.min.y, max_x: crop.max.x, max_y: crop.max.y }
+                    : info.source.region;
+                if (!r) throw new Error('取り直す範囲がありません。「残す範囲をドラッグで選択」で選んでください。');
+                region = new THREE.Box2(new THREE.Vector2(r.min_x, r.min_y), new THREE.Vector2(r.max_x, r.max_y));
+                const problem = regionProblem(region);
+                if (problem) throw new Error(problem);
+                const size = region.getSize(new THREE.Vector2());
+                const estimated = size.x * size.y / (spacing * spacing) * 1.5;
+                if (estimated > MAX_EXTRACTED_POINTS) {
+                    throw new Error(`点が多くなりすぎます (見込み約 ${Math.round(estimated / 1e4)} 万点、上限 ${MAX_EXTRACTED_POINTS / 1e4} 万点)。`
+                        + '点の間隔を広げるか、範囲を狭めてください。');
+                }
+                if (!confirm(`Google 3D Tiles から ${size.x.toFixed(0)} m × ${size.y.toFixed(0)} m の範囲を、`
+                    + `点の間隔 ${spacing} m で取り直します。3D Tiles の読み込み料金がかかります。続けますか？`)) {
+                    return;
+                }
+            } catch (error) {
+                setMapTuneStatus(error.message, 'error');
+                return;
+            }
+
+            mapTuneBusy = true;
+            mapTuneRefetching = true;
+            mapTuneRefetchCancelled = false;
+            updateMapTuneControls();
+            try {
+                const origin = info.origin;
+                const result = await extractGoogleMeshPoints({
+                    apiKey: googleBackground.apiKey,
+                    dracoDecoderPath: DRACO_DECODER_PATH,
+                    lat: origin.lat,
+                    lon: origin.lon,
+                    bounds: region,
+                    spacing,
+                    onProgress: message => setMapTuneStatus(message),
+                    isCancelled: () => mapTuneRefetchCancelled,
+                });
+                if (mapTuneRefetchCancelled) throw new Error('中止しました。');
+                // 取り直した点群は範囲の中心の地面を z=0 にしているので、この地図の原点の高度にそろえる
+                const k = new MapGeoFrame({ lat: origin.lat, lon: origin.lon, alt: origin.alt }).utmScaleFactor();
+                const dz = (result.alt - origin.alt) * k;
+                for (let i = 2; i < result.points.length; i += 3) result.points[i] += dz;
+
+                setMapTuneStatus(`取り直した点群 ${result.count.toLocaleString()} 点を送っています…`);
+                const meta = {
+                    type: 'google_3d_tiles', spacing, point_format: 'xyzrgb',
+                    region: { min_x: region.min.x, min_y: region.min.y, max_x: region.max.x, max_y: region.max.y },
+                };
+                const response = await fetch(
+                    `/map_params/${encodeURIComponent(tune.mapName)}/source?meta=${encodeURIComponent(JSON.stringify(meta))}`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/octet-stream' },
+                        body: packPointsWithColors(result.points, result.colors),
+                    });
+                if (!response.ok) throw new Error(await readErrorMessage(response));
+                const json = await response.json();
+                if (mapTune !== tune) return;
+                tune.info.pending_source = json.source;
+                tune.usePending = true;
+                // 取り直した範囲がそのまま元の点群の範囲になるので、切り取りは外す
+                cropSelector.setRegion(null);
+            } catch (error) {
+                console.error('点群を取り直せませんでした:', error);
+                setMapTuneStatus(`取り直せませんでした: ${error.message}`, 'error');
+                return;
+            } finally {
+                mapTuneBusy = false;
+                mapTuneRefetching = false;
+                updateMapTuneControls();
+            }
+            await previewMapTune();
+        }
+
+        function initMapTune() {
+            cropSelector = new RegionSelector({
+                scene, camera,
+                domElement: renderer.domElement,
+                color: CROP_OUTLINE_COLOR,
+                getPlaneZ: () => (googleBackground && googleBackground.mode === '2d'
+                    ? googleBackground.getHeightOffset('2d') : 0),
+                onChange: (box, dragging) => {
+                    updateMapTuneControls();
+                    if (!dragging && box && mapTune && cropSelector && !cropSelector.restoring) {
+                        setMapTuneStatus('残す範囲を選びました。「プレビュー」で確認してください。');
+                    }
+                },
+            });
+            document.getElementById('mt-crop-select').addEventListener('click', () => {
+                // クリックの意味が重ならないよう、ほかの指定モードは解除する
+                if (isAddingWaypointMode) toggleAddWaypointMode(null);
+                if (isPickingInitialPose) togglePickInitialPose();
+                clearPgmBrush();
+                stopWaypointTools();
+                if (regionSelector) regionSelector.setActive(false);
+                cropSelector.setActive(true);
+                setMapTuneStatus('地図の上を左ドラッグして、残す範囲を選んでください (Esc で中止)。');
+            });
+            document.getElementById('mt-crop-clear').addEventListener('click', () => {
+                cropSelector.setRegion(null);
+                setMapTuneStatus('残す範囲を全体に戻しました。「プレビュー」で確認してください。');
+            });
+            document.getElementById('mt-height-reference').addEventListener('change', updateHeightReferenceUi);
+            ['mt-obstacle-min', 'mt-obstacle-max'].forEach((id) => {
+                document.getElementById(id).addEventListener('input', updateZRangePlanes);
+            });
+            document.getElementById('mt-show-z-range').addEventListener('change', updateZRangePlanes);
+            MAP_TUNE_INPUT_IDS.forEach((id) => {
+                document.getElementById(id).addEventListener('change', () => {
+                    if (mapTune) setMapTuneStatus('設定を変えました。「プレビュー」で確認してから保存してください。');
+                });
+            });
+            document.getElementById('mt-use-pending').addEventListener('click', () => {
+                if (!mapTune) return;
+                mapTune.usePending = true;
+                updateMapTuneControls();
+                setMapTuneStatus('前回取り直した点群を元にします。「プレビュー」で確認してください。');
+            });
+            document.getElementById('mt-preview').addEventListener('click', () => previewMapTune());
+            document.getElementById('mt-save').addEventListener('click', saveMapTune);
+            document.getElementById('mt-revert').addEventListener('click', revertMapTune);
+            document.getElementById('mt-refetch').addEventListener('click', refetchMapTuneSource);
+            document.getElementById('mt-refetch-cancel').addEventListener('click', () => {
+                mapTuneRefetchCancelled = true;
+                setMapTuneStatus('中止しています…', 'warning');
+            });
+        }
+
+        // =====================================================================
+        // ウェイポイントをまとめて削除 (囲む) / まとめて追加 (線を引く)
+        // =====================================================================
+        const WAYPOINT_TOOL_BUTTON_LABELS = {
+            'wp-box-delete-button': '範囲を囲んでまとめて削除',
+            'wp-box-select-button': '範囲を囲んで選択',
+            'wp-freehand-button': 'フリーハンドで線を引いて追加',
+        };
+
+        function stopWaypointTools() {
+            if (waypointBoxSelector) waypointBoxSelector.setActive(false);
+            if (waypointBoxSelectSelector) waypointBoxSelectSelector.setActive(false);
+            if (waypointFreehand) waypointFreehand.setActive(false);
+            Object.entries(WAYPOINT_TOOL_BUTTON_LABELS).forEach(([id, label]) => {
+                const button = document.getElementById(id);
+                button.textContent = label;
+                button.style.backgroundColor = '';
+            });
+        }
+
+        /** クリック・ドラッグの意味が重なる、ほかの指定モードを解除する */
+        function stopOtherPointerModes() {
+            if (isAddingWaypointMode) toggleAddWaypointMode(null);
+            if (isPickingInitialPose) togglePickInitialPose();
+            clearPgmBrush();
+            if (regionSelector) regionSelector.setActive(false);
+            if (cropSelector) cropSelector.setActive(false);
+            stopWaypointTools();
+        }
+
+        function startWaypointTool(tool, buttonId, message) {
+            const wasActive = tool.active;
+            stopOtherPointerModes();
+            if (wasActive) return;   // もう一度押したら解除
+            tool.setActive(true);
+            const button = document.getElementById(buttonId);
+            button.textContent = `${message} (もう一度押すか Esc で解除)`;
+            button.style.backgroundColor = '#ff8c00';
+        }
+
+        function describeIndices(indices) {
+            const sorted = [...indices].sort((a, b) => a - b);
+            const contiguous = sorted.every((v, i) => i === 0 || v === sorted[i - 1] + 1);
+            if (contiguous && sorted.length > 2) return `#${sorted[0]}〜#${sorted[sorted.length - 1]}`;
+            const shown = sorted.slice(0, 12).map(i => `#${i}`).join(', ');
+            return sorted.length > 12 ? `${shown} ほか` : shown;
+        }
+
+        /** 画面上の四角 (client 座標) の中に見えているウェイポイントの番号 */
+        function waypointIndicesInScreenRect(rect) {
+            const canvas = renderer.domElement.getBoundingClientRect();
+            const indices = [];
+            const projected = new THREE.Vector3();
+            waypoints.forEach((wp, index) => {
+                if (!wp || !wp[0]) return;
+                projected.set(wp[0][0], wp[0][1], wp[0][2] || 0).project(camera);
+                if (projected.z < -1 || projected.z > 1) return;   // カメラの後ろ
+                const sx = canvas.left + (projected.x + 1) / 2 * canvas.width;
+                const sy = canvas.top + (1 - projected.y) / 2 * canvas.height;
+                if (sx >= rect.left && sx <= rect.right && sy >= rect.top && sy <= rect.bottom) indices.push(index);
+            });
+            return indices;
+        }
+
+        function waypointSphere(index) {
+            const group = meshRegistry[`waypoints-${currentMapName}`];
+            return group ? group.getObjectByName(`waypoint_sphere_${index}`) : null;
+        }
+
+        function waypointTypeColor(index) {
+            // 球を作るときと同じく、type が無ければ default の色にする
+            const wp = waypoints[index];
+            const raw = wp && wp.length > 2 ? (Array.isArray(wp[2]) ? wp[2][0] : wp[2]) : null;
+            return getColorByType((raw && raw.type) || 'default');
+        }
+
+        // ---------------------------------------------------------------------
+        // 複数選択
+        // ---------------------------------------------------------------------
+        const MULTI_SELECT_COLOR = 0xffffff;
+
+        function updateMultiSelectionUi() {
+            const group = meshRegistry[`waypoints-${currentMapName}`];
+            if (group) {
+                group.children.forEach((child) => {
+                    if (!child.isMesh || !child.name.startsWith('waypoint_sphere_')) return;
+                    const index = child.userData.waypointIndex;
+                    const selected = multiSelectedWaypoints.has(index);
+                    child.material.color.setHex(selected ? MULTI_SELECT_COLOR : waypointTypeColor(index));
+                    child.scale.setScalar(selected ? 1.6 : 1.0);
+                });
+            }
+            const count = multiSelectedWaypoints.size;
+            document.getElementById('wp-multi-status').textContent = count > 0
+                ? `複数選択: ${count} 個 (${describeIndices([...multiSelectedWaypoints])})。どれかをドラッグすると一緒に動きます (Esc で解除)。`
+                : '複数選択: なし';
+            document.getElementById('wp-multi-delete-button').disabled = count === 0;
+            document.getElementById('wp-multi-clear-button').disabled = count === 0;
+            refreshDragControlsObjects();
+        }
+
+        /** 1 つだけ選んでいる状態 (回転ギズモ・情報パネル) をやめて、複数選択に切り替える */
+        function switchToMultiSelection() {
+            if (selectedWaypoint) {
+                multiSelectedWaypoints.add(selectedWaypoint.userData.waypointIndex);
+                clearWaypointSelection();
+            }
+        }
+
+        function toggleMultiSelection(index) {
+            switchToMultiSelection();
+            if (multiSelectedWaypoints.has(index)) multiSelectedWaypoints.delete(index);
+            else multiSelectedWaypoints.add(index);
+            updateMultiSelectionUi();
+        }
+
+        function addToMultiSelection(indices) {
+            switchToMultiSelection();
+            indices.forEach(i => multiSelectedWaypoints.add(i));
+            updateMultiSelectionUi();
+        }
+
+        function clearMultiSelection() {
+            if (multiSelectedWaypoints.size === 0) return;
+            multiSelectedWaypoints.clear();
+            multiDragStart = null;
+            updateMultiSelectionUi();
+        }
+
+        /** 掴んだウェイポイントと同じだけ、複数選択しているウェイポイントを動かす */
+        function moveMultiSelectedWaypoints(grabbed) {
+            const grabbedIndex = grabbed.userData.waypointIndex;
+            const start = multiDragStart.get(grabbedIndex);
+            if (!start) return;
+            const dx = grabbed.position.x - start.x;
+            const dy = grabbed.position.y - start.y;
+            const group = grabbed.parent;
+            multiDragStart.forEach((origin, index) => {
+                const x = origin.x + dx;
+                const y = origin.y + dy;
+                waypoints[index][0][0] = x;
+                waypoints[index][0][1] = y;
+                waypoints[index][0][2] = 0;
+                const sphere = group.getObjectByName(`waypoint_sphere_${index}`);
+                if (sphere) sphere.position.set(x, y, 0);
+                const arrow = group.getObjectByName(`waypoint_arrow_${index}`);
+                if (arrow) arrow.position.set(x, y, 0);
+            });
+            updateWaypointPath(currentMapName);
+            calculateAndDisplayTotalDistance();
+            // ドラッグに追従して2Dマップの通行可領域を広げる
+            multiDragStart.forEach((_, index) => carveAroundWaypoint(index));
+            document.getElementById('info').innerHTML = `${multiDragStart.size} 個のウェイポイントを`
+                + ` (${dx.toFixed(2)}, ${dy.toFixed(2)}) m 動かしています。`;
+        }
+
+        function deleteMultiSelectedWaypoints() {
+            const indices = [...multiSelectedWaypoints];
+            if (indices.length === 0) return;
+            if (!confirm(`選択中の ${indices.length} 個のウェイポイント (${describeIndices(indices)}) を削除しますか？`)) return;
+            deleteWaypointsAt(indices);
+        }
+
+        /** 画面上で囲んだ範囲にあるウェイポイントを、確認してから削除する */
+        function deleteWaypointsInScreenRect(rect) {
+            stopWaypointTools();
+            const waypointsGroup = meshRegistry[`waypoints-${currentMapName}`];
+            if (!waypointsGroup || !waypointsGroup.visible || waypoints.length === 0) {
+                document.getElementById('info').innerHTML = '削除できるウェイポイントが表示されていません。';
+                return;
+            }
+            const indices = waypointIndicesInScreenRect(rect);
+            if (indices.length === 0) {
+                document.getElementById('info').innerHTML = '囲んだ範囲にウェイポイントがありません。';
+                return;
+            }
+            // 消えるものを目立たせてから確認する (確認ダイアログの前に 1 フレーム描かせる)
+            const spheres = indices.map(i => waypointsGroup.getObjectByName(`waypoint_sphere_${i}`)).filter(Boolean);
+            const saved = spheres.map(sphere => ({ sphere, color: sphere.material.color.getHex(), scale: sphere.scale.x }));
+            spheres.forEach((sphere) => {
+                sphere.material.color.setHex(0xffffff);
+                sphere.scale.setScalar(2.0);
+            });
+            requestAnimationFrame(() => requestAnimationFrame(() => {
+                const ok = confirm(`${indices.length} 個のウェイポイント (${describeIndices(indices)}) を削除しますか？`);
+                saved.forEach(({ sphere, color, scale }) => {
+                    sphere.material.color.setHex(color);
+                    sphere.scale.setScalar(scale);
+                });
+                if (ok) deleteWaypointsAt(indices);
+            }));
+        }
+
+        function deleteWaypointsAt(indices) {
+            const waypointsGroup = meshRegistry[`waypoints-${currentMapName}`];
+            if (!waypointsGroup) return;
+            clearWaypointSelection();
+            // 後ろから消す。1 つずつ消したときと同じく、消える点と区間の塗りつぶしを元へ戻す
+            [...new Set(indices)].sort((a, b) => b - a).forEach((index) => {
+                releaseWaypointCarve(waypoints[index], waypoints[index - 1], waypoints[index + 1]);
+                waypoints.splice(index, 1);
+            });
+            rebuildWaypointObjects(waypointsGroup);
+            updateWaypointPath(currentMapName);
+            if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
+            calculateAndDisplayTotalDistance();
+            document.getElementById('info').innerHTML = `ウェイポイントを ${indices.length} 個削除しました (${describeIndices(indices)})。`
+                + '「ウェイポイントを保存」で書き込みます。';
+        }
+
+        /** 引いた線に沿って、一定の間隔でウェイポイントを末尾に追加する。向きは線の進む方向。 */
+        function addWaypointsAlongStroke(points) {
+            stopWaypointTools();
+            let interval;
+            try {
+                interval = readNumberInput('wp-freehand-interval', '線を引いて並べる間隔', { min: 0.2 });
+            } catch (error) {
+                alert(error.message);
+                return;
+            }
+            const sampled = resamplePolyline(points, interval);
+            if (sampled.length < 2) {
+                document.getElementById('info').innerHTML = `線が短すぎます。間隔 (${interval} m) より長く線を引いてください。`;
+                return;
+            }
+            const position = document.getElementById('wp-freehand-position').value;
+            const insertAt = freehandInsertIndex(position);
+            if (insertAt === null) {
+                alert('「選択中の後」に追加するには、先に基準のウェイポイントを選んでください。');
+                return;
+            }
+            const waypointsGroup = ensureWaypointsGroup();
+            clearWaypointSelection();
+            // 間に挟むと元の区間が無くなるので、その分の塗りつぶしを元へ戻しておく
+            releaseWaypointCarve(null, waypoints[insertAt - 1], waypoints[insertAt]);
+            const following = waypoints[insertAt];
+            const added = sampled.map((point, i) => {
+                let to = sampled[i + 1];
+                let from = point;
+                if (!to) {
+                    // 最後の点は、後ろにウェイポイントがあればそちらを向く。無ければ 1 つ前と同じ向き
+                    if (following) to = { x: following[0][0], y: following[0][1] };
+                    else { from = sampled[i - 1]; to = point; }
+                }
+                const yaw = Math.atan2(to.y - from.y, to.x - from.x);
+                return [[point.x, point.y, 0], [0, 0, Math.sin(yaw / 2), Math.cos(yaw / 2)], { ...DEFAULT_WAYPOINT_ATTRIBUTES }];
+            });
+            waypoints.splice(insertAt, 0, ...added);
+            rebuildWaypointObjects(waypointsGroup);
+            updateWaypointPath(currentMapName);
+            if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
+            calculateAndDisplayTotalDistance();
+            // 「ウェイポイント移動に追従して通行可にする」がオンなら、追加した区間も通行可にする
+            for (let i = insertAt; i < insertAt + added.length; i++) carveAroundWaypoint(i);
+            const firstNew = insertAt;
+            const positionLabel = { end: '末尾', start: '先頭', after: '選択中の後' }[position];
+            document.getElementById('info').innerHTML = `線に沿ってウェイポイントを ${sampled.length} 個 (間隔 ${interval} m、`
+                + `#${firstNew}〜#${firstNew + added.length - 1}) ${positionLabel}に追加しました。「ウェイポイントを保存」で書き込みます。`;
+        }
+
+        /** フリーハンドで追加する位置 (waypoints の何番目に入れるか)。選択中の後で選んでいなければ null。 */
+        function freehandInsertIndex(position) {
+            if (position === 'start') return 0;
+            if (position === 'after') {
+                if (selectedWaypoint) return selectedWaypoint.userData.waypointIndex + 1;
+                if (multiSelectedWaypoints.size > 0) return Math.max(...multiSelectedWaypoints) + 1;
+                return null;
+            }
+            return waypoints.length;
+        }
+
+        function initWaypointTools() {
+            waypointBoxSelector = new ScreenRectSelector({
+                domElement: renderer.domElement,
+                onSelect: deleteWaypointsInScreenRect,
+            });
+            waypointFreehand = new FreehandStroke({
+                domElement: renderer.domElement,
+                scene,
+                pickPoint: (event) => {
+                    const point = pointerWorldPosition(event);
+                    return point ? { x: point.x, y: point.y } : null;
+                },
+                onFinish: addWaypointsAlongStroke,
+            });
+            document.getElementById('wp-box-delete-button').addEventListener('click', () => {
+                startWaypointTool(waypointBoxSelector, 'wp-box-delete-button', '削除するウェイポイントを囲んでください');
+            });
+            waypointBoxSelectSelector = new ScreenRectSelector({
+                domElement: renderer.domElement,
+                onSelect: (rect) => {
+                    stopWaypointTools();
+                    const indices = waypointIndicesInScreenRect(rect);
+                    if (indices.length === 0) {
+                        document.getElementById('info').innerHTML = '囲んだ範囲にウェイポイントがありません。';
+                        return;
+                    }
+                    addToMultiSelection(indices);
+                    document.getElementById('info').innerHTML = `ウェイポイントを ${indices.length} 個選びました。`
+                        + 'どれかをドラッグすると一緒に動きます。';
+                },
+            });
+            document.getElementById('wp-box-select-button').addEventListener('click', () => {
+                startWaypointTool(waypointBoxSelectSelector, 'wp-box-select-button', '選ぶウェイポイントを囲んでください');
+            });
+            document.getElementById('wp-multi-delete-button').addEventListener('click', deleteMultiSelectedWaypoints);
+            document.getElementById('wp-multi-clear-button').addEventListener('click', clearMultiSelection);
+            document.getElementById('wp-freehand-button').addEventListener('click', () => {
+                if (!waypointFreehand.active && freehandInsertIndex(document.getElementById('wp-freehand-position').value) === null) {
+                    alert('「選択中の後」に追加するには、先に基準のウェイポイントを選んでください。');
+                    return;
+                }
+                startWaypointTool(waypointFreehand, 'wp-freehand-button', '地図の上をドラッグして線を引いてください');
+            });
+        }
+
+        // =====================================================================
+        // 場所の検索 (住所・地名・緯度経度 -> その場所を表示)
+        // =====================================================================
+        // この距離より遠い場所は、いまの原点のまま移動すると地図座標の近似がずれるので、原点を切り替える
+        const SEARCH_MOVE_LIMIT_M = 10000;
+
+        function setGeoSearchStatus(message, level = 'info') {
+            const el = document.getElementById('geo-search-status');
+            el.textContent = message;
+            el.classList.toggle('hud-error', level === 'error');
+            el.classList.toggle('hud-warning', level === 'warning');
+        }
+
+        /** 緯度経度として読めればそれを返す (Google マップの URL、度分秒にも対応)。読めなければ null。 */
+        function parseLatLonText(text) {
+            const t = text.trim();
+            const valid = (lat, lon) => Number.isFinite(lat) && Number.isFinite(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+            const pair = (a, b) => {
+                if (valid(a, b)) return { lat: a, lon: b };
+                if (valid(b, a)) return { lat: b, lon: a };   // 経度, 緯度 の順で書かれている
+                return null;
+            };
+            // Google マップの URL: .../@35.69,139.81,17z や !3d35.69!4d139.81 や ?q=35.69,139.81
+            let m = t.match(/!3d(-?\d+(?:\.\d+)?)!4d(-?\d+(?:\.\d+)?)/)
+                || t.match(/@(-?\d+(?:\.\d+)?),(-?\d+(?:\.\d+)?)/)
+                || t.match(/[?&](?:q|query|ll|center)=(-?\d+(?:\.\d+)?)(?:,|%2C)\s*(-?\d+(?:\.\d+)?)/i);
+            if (m) return pair(parseFloat(m[1]), parseFloat(m[2]));
+            // 度分秒: 35°41'55.0"N 139°49'03.4"E / 北緯35度41分55秒 東経139度49分3秒
+            const dms = [...t.matchAll(/([NSEW北南東西]?)[緯経]?\s*(-?\d+(?:\.\d+)?)\s*[°度]\s*(?:(\d+(?:\.\d+)?)\s*['′’分])?\s*(?:(\d+(?:\.\d+)?)\s*(?:["″”]|秒))?\s*([NSEW])?/gi)];
+            if (dms.length === 2) {
+                const values = dms.map((d) => {
+                    const hemi = (d[1] || d[5] || '').toUpperCase();
+                    let v = Math.abs(parseFloat(d[2])) + (parseFloat(d[3]) || 0) / 60 + (parseFloat(d[4]) || 0) / 3600;
+                    if (parseFloat(d[2]) < 0 || hemi === 'S' || hemi === 'W' || hemi === '南' || hemi === '西') v = -v;
+                    return { v, hemi };
+                });
+                const [a, b] = values;
+                if (['E', 'W', '東', '西'].includes(a.hemi) || ['N', 'S', '北', '南'].includes(b.hemi)) return pair(b.v, a.v);
+                return pair(a.v, b.v);
+            }
+            // 10 進数の組: 35.6986, 139.8176 / 35.6986 139.8176
+            m = t.match(/^\(?\s*(-?\d+(?:\.\d+)?)\s*(?:[,，、]\s*|\s+)(-?\d+(?:\.\d+)?)\s*\)?$/);
+            if (m) return pair(parseFloat(m[1]), parseFloat(m[2]));
+            return null;
+        }
+
+        /** 検索した場所に赤いピンを立てる (緯度経度で持ち、原点が変わったら置き直す) */
+        function placeSearchMarker(location) {
+            if (location !== undefined) {
+                if (searchMarker) {
+                    // CSS2DObject のラベルは、親ごと外しても DOM に残るので自分で消す
+                    searchMarker.object.traverse((o) => {
+                        if (o.isCSS2DObject) o.element.remove();
+                        if (o.geometry) o.geometry.dispose();
+                        if (o.material) o.material.dispose();
+                    });
+                    scene.remove(searchMarker.object);
+                    searchMarker = null;
+                }
+                if (location) {
+                    const object = new THREE.Group();
+                    object.name = 'search-marker';
+                    const material = new THREE.MeshBasicMaterial({ color: 0xff2d2d });
+                    const cone = new THREE.Mesh(new THREE.ConeGeometry(0.6, 3, 16), material);
+                    cone.rotation.x = -Math.PI / 2;   // 先を下 (地面) に向ける
+                    cone.position.z = 1.5;
+                    const head = new THREE.Mesh(new THREE.SphereGeometry(0.9, 16, 12), material.clone());
+                    head.position.z = 3.3;
+                    object.add(cone, head);
+                    const div = document.createElement('div');
+                    div.className = 'search-marker-label';
+                    div.textContent = location.name;
+                    const label = new CSS2DObject(div);
+                    label.position.z = 4.6;
+                    object.add(label);
+                    scene.add(object);
+                    searchMarker = { ...location, object };
+                }
+            }
+            if (!searchMarker) return;
+            const visible = Boolean(geoFrame);
+            searchMarker.object.visible = visible;
+            if (visible) {
+                const p = geoFrame.latLonToMap(searchMarker.lat, searchMarker.lon);
+                searchMarker.object.position.set(p.x, p.y, 0);
+            }
+        }
+
+        /** 地図座標 (x, y) を画面の中心にする。見下ろす向きはそのままで、近すぎるときは少し引く。 */
+        function moveViewTo(x, y) {
+            const offset = camera.position.clone().sub(orbitControls.target);
+            if (offset.length() < 60) offset.setLength(80);
+            orbitControls.target.set(x, y, 0);
+            camera.position.copy(orbitControls.target).add(offset);
+            orbitControls.update();
+        }
+
+        /** 検索した場所を表示する。原点の近くならカメラを動かし、遠いか原点が無ければ原点をその場所にする。 */
+        async function goToLocation({ lat, lon, name }) {
+            if (googleBackgroundReady) await googleBackgroundReady;
+            if (!googleBackground) return;
+            let point = geoFrame ? geoFrame.latLonToMap(lat, lon) : null;
+            const distanceFromOrigin = point ? Math.hypot(point.x, point.y) : Infinity;
+            let originChanged = false;
+            if (distanceFromOrigin > SEARCH_MOVE_LIMIT_M) {
+                if (geoFrame && geoOriginMapName && !confirm(`「${name}」は、マップ「${geoOriginMapName}」の原点から約 `
+                    + `${(distanceFromOrigin / 1000).toFixed(1)} km 離れています。Google 背景の原点をこの場所に切り替えますか？`
+                    + '(ロード中の地図はそのままなので、背景とは重ならなくなります)')) {
+                    return;
+                }
+                applyGeoOrigin({ lat, lon, alt: 0, yawDeg: 0 }, { mapName: null, source: 'search', label: name });
+                point = { x: 0, y: 0 };
+                originChanged = true;
+            }
+            const previousTarget = orbitControls.target.clone();
+            placeSearchMarker({ lat, lon, name });
+            if (googleBackground.hasApiKey && googleBackground.mode === 'none') await changeGoogleBgMode('2d');
+            moveViewTo(point.x, point.y);
+            // 3D は場所によって地面の高さが違うので、離れた場所へ動いたら高さを合わせ直す
+            if (googleBackground.mode === '3d'
+                && (originChanged || Math.hypot(point.x - previousTarget.x, point.y - previousTarget.y) > 300)) {
+                scheduleAutoFit3DHeight({ force: true });
+            }
+            setGeoSearchStatus(originChanged
+                ? `「${name}」を原点にして表示しました (${lat.toFixed(7)}, ${lon.toFixed(7)})。`
+                : `「${name}」へ移動しました (${lat.toFixed(7)}, ${lon.toFixed(7)}、地図座標 x ${point.x.toFixed(1)} m, y ${point.y.toFixed(1)} m)。`,
+                'info');
+        }
+
+        function renderSearchResults(results) {
+            const container = document.getElementById('geo-search-results');
+            container.innerHTML = '';
+            if (results.length <= 1) return;
+            results.forEach((result, index) => {
+                const button = document.createElement('button');
+                button.type = 'button';
+                button.className = 'geo-search-result' + (index === 0 ? ' is-current' : '');
+                button.textContent = result.address && result.address !== result.name
+                    ? `${result.name} — ${result.address}` : result.name;
+                button.addEventListener('click', () => {
+                    container.querySelectorAll('.geo-search-result').forEach(b => b.classList.remove('is-current'));
+                    button.classList.add('is-current');
+                    goToLocation({ lat: result.lat, lon: result.lon, name: result.name || result.address });
+                });
+                container.appendChild(button);
+            });
+        }
+
+        async function searchLocation() {
+            const input = document.getElementById('geo-search-input');
+            const query = input.value.trim();
+            if (!query) {
+                setGeoSearchStatus('検索する住所・地名・緯度経度を入力してください。', 'warning');
+                return;
+            }
+            renderSearchResults([]);
+            const latLon = parseLatLonText(query);
+            if (latLon) {
+                await goToLocation({ ...latLon, name: `${latLon.lat.toFixed(6)}, ${latLon.lon.toFixed(6)}` });
+                return;
+            }
+            const button = document.getElementById('geo-search-button');
+            button.disabled = true;
+            setGeoSearchStatus(`「${query}」を検索しています…`, 'info');
+            try {
+                const response = await fetch(`/geocode?q=${encodeURIComponent(query)}`);
+                const json = await response.json();
+                if (json.status !== 'success') throw new Error(json.message || `HTTP ${response.status}`);
+                if (json.results.length === 0) {
+                    setGeoSearchStatus(`「${query}」は見つかりませんでした。住所や地名を変えてみてください。`, 'warning');
+                    return;
+                }
+                renderSearchResults(json.results);
+                const first = json.results[0];
+                await goToLocation({ lat: first.lat, lon: first.lon, name: first.name || first.address });
+                if (json.results.length > 1) {
+                    setGeoSearchStatus(`${document.getElementById('geo-search-status').textContent} `
+                        + `ほかに ${json.results.length - 1} 件の候補があります (下の一覧から選べます)。`, 'info');
+                }
+            } catch (error) {
+                setGeoSearchStatus(`場所を検索できません: ${error.message}`, 'error');
+            } finally {
+                button.disabled = false;
+            }
+        }
+
+        function initGeoSearch() {
+            document.getElementById('geo-search-button').addEventListener('click', searchLocation);
+            document.getElementById('geo-search-input').addEventListener('keydown', (event) => {
+                if (event.key === 'Enter' && !event.isComposing) {
+                    event.preventDefault();
+                    searchLocation();
+                }
+            });
+        }
+
+        /** 地図座標 (x, y) の近くの点群から地面の高さを推定する。点が無ければ null。 */
+        function estimatePointCloudGroundZ(x, y) {
+            const clouds = Object.keys(meshRegistry)
+                .filter(key => key.startsWith('pcd-'))
+                .map(key => meshRegistry[key]);
+            if (clouds.length === 0) return null;
+            for (const radius of [2, 5, 10]) {
+                const heights = [];
+                const r2 = radius * radius;
+                clouds.forEach(cloud => {
+                    const pos = cloud.geometry.attributes.position.array;
+                    for (let i = 0; i < pos.length; i += 3) {
+                        const dx = pos[i] - x;
+                        const dy = pos[i + 1] - y;
+                        if (dx * dx + dy * dy < r2) heights.push(pos[i + 2]);
+                    }
+                });
+                if (heights.length >= 20) {
+                    heights.sort((a, b) => a - b);
+                    // 地面より下に出るノイズを避けるため、最小値ではなく下位 5% を地面とみなす
+                    return heights[Math.floor(heights.length * 0.05)];
+                }
+            }
+            return null;
+        }
+
+        function applyGoogleBgHeight(value) {
+            const mode = googleBackground.mode;
+            if (mode === 'none' || !Number.isFinite(value)) return;
+            googleBackground.setHeightOffset(value, mode);
+            writeGeoSettings(currentGeoSettingsName(), mode === '2d' ? { height2d: value } : { height3d: value });
+            updateGoogleBgControls();
+        }
+
+        // 3D Tiles の地面を、点群・2D地図・ウェイポイントより少し下に置く (clearanceOffset3D)。
+        // 地面の高さに合わせるだけだと、写真から作った地面の凹凸 (数十 cm) に PGM やウェイポイントが埋もれる。
+        const TILE_CLEARANCE_MARGIN = 0.05;   // 地図より下げる幅 [m]
+        const TILE_GROUND_BAND = 1.0;         // 地面とみなす高さの幅。これより高い所は車・木・建物とみなす [m]
+        const TILE_CLEARANCE_GRID = 11;       // 画面中心のまわりで高さを測る点の数 (1 辺)
+
+        function sortedPercentile(sorted, p) {
+            return sorted[Math.min(sorted.length - 1, Math.max(0, Math.round((sorted.length - 1) * p)))];
+        }
+
+        /**
+         * 画面中心のまわりで、地図がある所 (PGM の通行可の所・ウェイポイント) の真下の 3D Tiles の地面が、
+         * 地図 (PGM・ウェイポイントの z=0 と点群の地面) より下に来る高さ補正を求める。
+         * 場所ごとに地面の高さが違う (高架・デッキなど) ので、まわり全体ではなく地図の真下だけを測る。
+         * 地図の真下の高さの中央値から TILE_GROUND_BAND 以内を地面の凹凸とし、その上端 (95%) と
+         * ウェイポイントの真下の地面を地図より下にする。地図が無ければ、画面中心の地面の高さのまわりを測る。
+         * 測れる細かいタイルが足りなければ null。
+         */
+        function clearanceOffset3D(cx, cy, groundZ, centerSurfaceZ) {
+            const distance = camera.position.distanceTo(orbitControls.target);
+            const radius = THREE.MathUtils.clamp(distance * 0.4, 5, 60);
+            const surfaceAt = (x, y) => googleBackground.surfaceHeightAt(x, y, { maxError: FIT_TILE_MAX_ERROR });
+            const mapHeights = [];
+            const areaHeights = [];
+            for (let i = 0; i < TILE_CLEARANCE_GRID; i++) {
+                for (let j = 0; j < TILE_CLEARANCE_GRID; j++) {
+                    const x = cx + (i / (TILE_CLEARANCE_GRID - 1) * 2 - 1) * radius;
+                    const y = cy + (j / (TILE_CLEARANCE_GRID - 1) * 2 - 1) * radius;
+                    const z = surfaceAt(x, y);
+                    if (z === null) continue;
+                    areaHeights.push(z);
+                    if (pgmEdit && pgmEdit.mesh.visible) {
+                        const { col, row } = pgmWorldToPixel(x, y);
+                        if (col >= 0 && col < pgmEdit.width && row >= 0 && row < pgmEdit.height
+                            && pgmEdit.gray[row * pgmEdit.width + col] === PGM_FREE) {
+                            mapHeights.push(z);
+                        }
+                    }
+                }
+            }
+            const waypointHeights = [];
+            waypoints.forEach((wp) => {
+                if (!wp || !wp[0]) return;
+                const [x, y] = wp[0];
+                if (Math.hypot(x - cx, y - cy) > radius * 1.5) return;
+                const z = surfaceAt(x, y);
+                if (z !== null) waypointHeights.push(z);
+            });
+
+            const content = mapHeights.concat(waypointHeights).sort((a, b) => a - b);
+            let base;
+            let heights;
+            if (content.length >= 5) {
+                base = sortedPercentile(content, 0.5);
+                heights = content;
+            } else if (areaHeights.length >= 10) {
+                base = centerSurfaceZ;
+                heights = areaHeights.sort((a, b) => a - b);
+            } else {
+                return null;
+            }
+            const groundHeights = heights.filter(z => Math.abs(z - base) <= TILE_GROUND_BAND);
+            if (groundHeights.length === 0) return null;
+            let top = sortedPercentile(groundHeights, 0.95);
+            // ウェイポイントの真下の地面は、必ず地図より下にする (車や木の上に当たった所は除く)
+            waypointHeights.forEach((z) => {
+                if (Math.abs(z - base) <= TILE_GROUND_BAND) top = Math.max(top, z);
+            });
+            const targetTop = Math.min(groundZ, 0) - TILE_CLEARANCE_MARGIN;
+            const offset = googleBackground.getHeightOffset('3d') + (targetTop - top);
+            // 地面より高い所 (木・屋根・高架など) の下にあるウェイポイントは、下げても隠れたままになる
+            const coveredWaypoints = waypointHeights.filter(z => z - base > TILE_GROUND_BAND).length;
+            return {
+                offset,
+                // 地図の真下の地面 (中央値) を z=0 に合わせた場合より、どれだけ下げたか
+                lowered: top - base - targetTop,
+                radius,
+                samples: content.length >= 5 ? content.length : areaHeights.length,
+                basis: content.length >= 5 ? 'map' : 'area',
+                coveredWaypoints,
+            };
+        }
+
+        function fitGoogleBgHeightToPointCloud({ auto = false, clearance = !auto } = {}) {
+            const mode = googleBackground.mode;
+            const { x, y } = orbitControls.target;
+            const hasPointCloud = Object.keys(meshRegistry).some(key => key.startsWith('pcd-'));
+            // 点群 (3D 地図) を読んでいないときは、地図の z=0 (PGM やウェイポイントの高さ) を地面とする。
+            // 自動で合わせるときは、画面中心の近くに点が無い場合も z=0 にする。
+            let groundZ = hasPointCloud ? estimatePointCloudGroundZ(x, y) : 0;
+            if (groundZ === null && auto) groundZ = 0;
+            const groundLabel = hasPointCloud ? '点群の地面' : 'PGM・ウェイポイントの高さ (z=0)';
+            if (groundZ === null) {
+                setGoogleBgStatus('画面中心の近く (半径 10m 以内) に点群がありません。平らな地面が画面中心に来るようにしてから押してください。', 'warning');
+                return;
+            }
+            if (mode === '2d') {
+                // 地面の点が写真に隠れないよう、少しだけ下に置く
+                applyGoogleBgHeight(groundZ - 0.05);
+                setGoogleBgStatus(`衛星写真を${groundLabel}に合わせました (地面 z = ${groundZ.toFixed(2)} m)。`, 'info');
+            } else if (mode === '3d') {
+                // 真上の細かいタイルで合わせる。自動のときは、まだ無ければ近くのタイルや
+                // 少し粗いタイルでおおまかに合わせ (カメラが表面の下に入って読み込みが止まるのを防ぐ)、あとで合わせ直す。
+                let surface = null;
+                const fineZ = googleBackground.surfaceHeightAt(x, y, { maxError: FIT_TILE_MAX_ERROR });
+                if (fineZ !== null) {
+                    surface = { z: fineZ, distance: 0, approximate: false };
+                } else if (auto) {
+                    const near = googleBackground.surfaceHeightNear(x, y, 2000, { maxError: APPROX_FIT_TILE_MAX_ERROR });
+                    if (near) surface = { ...near, approximate: true };
+                }
+                if (surface === null) {
+                    if (!auto) {
+                        // 細かいタイルを読み込ませてから、読み込めたら合わせる
+                        setGoogleBgStatus('画面中心の 3D Tiles を読み込んでいます。読み込めたら高さを合わせます…', 'info');
+                        scheduleAutoFit3DHeight({ force: true });
+                    }
+                    return null;
+                }
+                if (clearance && !surface.approximate) {
+                    const clear = clearanceOffset3D(x, y, groundZ, surface.z);
+                    if (clear) {
+                        applyGoogleBgHeight(clear.offset);
+                        const mapLabel = hasPointCloud ? '点群の地面・PGM・ウェイポイント' : 'PGM・ウェイポイント';
+                        setGoogleBgStatus(`3D Tiles の地面を${mapLabel}より少し下に合わせました`
+                            + ` (高さ補正 ${clear.offset.toFixed(2)} m、画面中心から半径 ${Math.round(clear.radius)} m の`
+                            + `${clear.basis === 'map' ? '地図の真下の' : ''}地面の凹凸を見て`
+                            + ` ${clear.lowered.toFixed(2)} m 下げています)。`
+                            + (clear.coveredWaypoints > 0
+                                ? `ウェイポイント ${clear.coveredWaypoints} 個は木や屋根・高架などの下にあり、高さどおりに隠れます。`
+                                : '建物や木は高さどおりに手前に来ます。')
+                            + '隠れて見えないときは「点群・2D地図・ウェイポイントを 3D Tiles の手前に表示する」を使ってください。',
+                            clear.coveredWaypoints > 0 ? 'warning' : 'info');
+                        return { error: 0, approximate: false, cleared: true };
+                    }
+                }
+                const newOffset = googleBackground.getHeightOffset('3d') + (groundZ - surface.z);
+                applyGoogleBgHeight(newOffset);
+                if (!auto) {
+                    setGoogleBgStatus(`3D Tiles を${groundLabel}に合わせました (高さ補正 ${newOffset.toFixed(2)} m)。`, 'info');
+                } else if (surface.approximate) {
+                    setGoogleBgStatus(surface.distance > 0
+                        ? `3D Tiles の高さを自動で合わせています… (${surface.distance} m 先のタイルで仮合わせ)`
+                        : '3D Tiles の高さを自動で合わせています… (細かいタイルを読み込み中のため仮合わせ)', 'info');
+                } else {
+                    setGoogleBgStatus(`3D Tiles の高さを画面中心の地面に自動で合わせました (高さ補正 ${newOffset.toFixed(2)} m)。`
+                        + '建物の屋根などに合ってしまった場合は、平らな地面を画面中心にしてボタンで合わせ直してください。', 'info');
+                }
+                return { error: surface.z - groundZ, approximate: surface.approximate };
+            }
+            return null;
+        }
+
+        // 原点の高度 (init_lat_lon_alt.txt) は 3D Tiles の高さの基準 (WGS84 楕円体高) と
+        // 一致しないことが多く、数十m 浮いたり沈んだりする。カメラが表面の下に入ると
+        // 何も映らないので、このマップで高さ補正を保存していなければ読み込み後に自動で合わせる。
+        let autoFit3DTimer = null;
+        // 高さ合わせに使う 3D Tiles の詳細度 (タイルの geometricError [m])。
+        // 読み込み始めの地球全体を覆う粗いタイルは、表面が実際の地面から数 km ずれているので使わない。
+        const FIT_TILE_MAX_ERROR = 40;
+        // 自動の仮合わせでは少し粗いタイルも使う (誤差がこの程度なら数十 m 以内に収まる)
+        const APPROX_FIT_TILE_MAX_ERROR = 500;
+        /** force: 保存済みの補正値があっても合わせる (ボタンで押したとき) */
+        function scheduleAutoFit3DHeight({ force = false } = {}) {
+            clearInterval(autoFit3DTimer);
+            if (googleBackground) googleBackground.clearProbe();
+            // デバイスの現在地は毎回場所が変わるので、保存した補正値は使わず必ず合わせ直す
+            const saved = readGeoSettings(currentGeoSettingsName()).height3d;
+            if (!force && geoOriginSource !== 'device' && geoOriginSource !== 'search' && saved !== undefined && saved !== null) return;
+            const startedAt = performance.now();
+            let passes = 0;
+            const stop = () => {
+                clearInterval(autoFit3DTimer);
+                googleBackground.clearProbe();
+            };
+            autoFit3DTimer = setInterval(() => {
+                if (googleBackground.mode !== '3d' || performance.now() - startedAt > 90 * 1000) {
+                    if (googleBackground.mode === '3d' && passes === 0) {
+                        setGoogleBgStatus('3D Tiles の高さを自動で合わせられませんでした。平らな地面を画面中心にして'
+                            + '「画面中心の地面に高さを合わせる」を押すか、「高さ補正」を入力してください。', 'warning');
+                    }
+                    stop();
+                    return;
+                }
+                // 画面中心の真下のタイルを、カメラの位置 (地表の下に入っていても) に関係なく読み込ませる
+                googleBackground.setProbe(orbitControls.target.x, orbitControls.target.y);
+                // 粗い詳細度のタイルで合わせないよう、読み込みが落ち着いてから測る
+                if (!googleBackground.is3DIdle()) return;
+                const result = fitGoogleBgHeightToPointCloud({ auto: true });
+                if (result === null) return;   // まだ近くにも使えるタイルが無い
+                // 高さを動かすと見えるタイルが変わり詳細度が上がるので、画面中心の真上のタイルで
+                // ずれが小さくなるまで数回測り直す。仮合わせは細かいタイルが読み込まれるまで続け、回数には数えない。
+                if (!result.approximate) passes++;
+                if ((!result.approximate && Math.abs(result.error) < 0.1) || passes >= 8) {
+                    // 地面に合ったら、地図が地面の凹凸に埋もれないよう少し下げて終える
+                    fitGoogleBgHeightToPointCloud({ auto: true, clearance: true });
+                    stop();
+                }
+            }, 1000);
+        }
+
+        /** Google 背景の表示を切り替える ('none' | '2d' | '3d') */
+        async function changeGoogleBgMode(mode) {
+            const ok = await googleBackground.setMode(mode);
+            if (ok && mode === '3d') scheduleAutoFit3DHeight();
+            // マップを読まずに背景だけ表示するとき、中央の「マップを選択してください」が邪魔にならないよう消す
+            if (ok && mode !== 'none') document.getElementById('loading-message').style.display = 'none';
+            // 何もロードしていないとカメラが原点のすぐ近くにあり背景が見えないので、原点を見下ろす位置へ引く
+            if (ok && mode !== 'none' && Object.keys(meshRegistry).length === 0
+                && camera.position.distanceTo(orbitControls.target) < 30) {
+                orbitControls.target.set(0, 0, 0);
+                camera.position.set(0, -80, 80);
+                orbitControls.update();
+            }
+            updateGoogleBgControls();
+            return ok;
+        }
+
+        async function initGoogleBackground() {
+            googleBackground = new GoogleBackground({
+                scene, camera, renderer,
+                controls: orbitControls,
+                dracoDecoderPath: DRACO_DECODER_PATH,
+                attributionElement: document.getElementById('google-attribution'),
+                onStatus: setGoogleBgStatus,
+            });
+
+            const modeSelect = document.getElementById('google-bg-mode');
+            modeSelect.addEventListener('change', () => changeGoogleBgMode(modeSelect.value));
+            document.getElementById('geo-origin-device').addEventListener('click', () => useDeviceLocationAsOrigin());
+            document.getElementById('google-bg-height').addEventListener('change', (event) => {
+                applyGoogleBgHeight(parseFloat(event.target.value));
+            });
+            document.getElementById('google-bg-fit-ground').addEventListener('click', () => fitGoogleBgHeightToPointCloud());
+            // 3D Tiles の手前に地図を表示するか (ブラウザに保存。マップによらず共通)
+            const mapOnTopCheckbox = document.getElementById('google-bg-map-on-top');
+            try {
+                const saved = localStorage.getItem(MAP_ON_TOP_STORAGE_KEY);
+                if (saved !== null) mapOnTopCheckbox.checked = saved === 'true';
+            } catch (error) {
+                // 保存できない環境では既定 (手前に表示) のまま
+            }
+            googleBackground.mapOnTop3D = mapOnTopCheckbox.checked;
+            mapOnTopCheckbox.addEventListener('change', () => {
+                googleBackground.mapOnTop3D = mapOnTopCheckbox.checked;
+                try {
+                    localStorage.setItem(MAP_ON_TOP_STORAGE_KEY, String(mapOnTopCheckbox.checked));
+                } catch (error) {
+                    // 保存できなくても表示には影響しない
+                }
+            });
+            document.getElementById('google-bg-opacity').addEventListener('input', (event) => {
+                googleBackground.setOpacity2D(parseFloat(event.target.value));
+            });
+            document.getElementById('geo-origin-apply').addEventListener('click', () => {
+                const value = id => parseFloat(document.getElementById(id).value);
+                const origin = {
+                    lat: value('geo-origin-lat'), lon: value('geo-origin-lon'),
+                    alt: Number.isFinite(value('geo-origin-alt')) ? value('geo-origin-alt') : 0,
+                    yawDeg: Number.isFinite(value('geo-origin-yaw')) ? value('geo-origin-yaw') : 0,
+                };
+                if (!(Math.abs(origin.lat) <= 90 && Math.abs(origin.lon) <= 180)) {
+                    setGoogleBgStatus('緯度 (-90〜90) と経度 (-180〜180) を入力してください。', 'error');
+                    return;
+                }
+                // マップを読んでいなければ「マップ未ロード用」として保存する
+                const mapName = geoOriginMapName || currentMapName || null;
+                writeGeoSettings(mapName, { manualOrigin: origin });
+                loadGeoOrigin(mapName).then(() => {
+                    setGoogleBgStatus(mapName
+                        ? '手入力した原点を使います。'
+                        : '手入力した原点を使います。マップが無くても「表示」で背景を選べます。', 'info');
+                });
+            });
+            document.getElementById('geo-origin-reset').addEventListener('click', async () => {
+                const mapName = geoOriginMapName || currentMapName || null;
+                writeGeoSettings(mapName, { manualOrigin: null });
+                if (mapName) {
+                    loadGeoOrigin(mapName, { preferFile: true });
+                    return;
+                }
+                // マップが無いので戻す先のファイルも無い。原点を未設定に戻す。
+                geoFrame = null;
+                geoOriginSource = null;
+                googleBackground.setFrame(null);
+                await googleBackground.setMode('none');
+                setGoogleBgStatus('手入力した原点を消しました。', 'info');
+                updateGoogleBgControls();
+            });
+
+            // 既存マップの原点 (GNSS で作った地図) を選んで入力欄に入れる。同じ現場で事前地図なしに使うとき用。
+            const presetSelect = document.getElementById('geo-origin-preset');
+            presetSelect.addEventListener('change', () => {
+                const option = presetSelect.selectedOptions[0];
+                if (!option || !option.value) return;
+                setGeoOriginFields(parseFloat(option.dataset.lat), parseFloat(option.dataset.lon),
+                                   parseFloat(option.dataset.alt), 0);
+                setGoogleBgStatus(`マップ「${option.value}」の原点を入力しました。「この原点を使う」で適用します。`, 'info');
+            });
+            fetch('/geo_origins')
+                .then(response => response.json())
+                .then(json => {
+                    (json.origins || []).forEach(origin => {
+                        const option = document.createElement('option');
+                        option.value = origin.map_name;
+                        option.textContent = `${origin.map_name} (${origin.lat.toFixed(5)}, ${origin.lon.toFixed(5)})`;
+                        option.dataset.lat = origin.lat;
+                        option.dataset.lon = origin.lon;
+                        option.dataset.alt = origin.alt;
+                        presetSelect.appendChild(option);
+                    });
+                })
+                .catch(error => console.warn('既存マップの原点一覧を取得できません:', error));
+
+            try {
+                const response = await fetch('/google_maps_config');
+                const config = await response.json();
+                googleBackground.setApiKey(config.api_key);
+                if (!googleBackground.hasApiKey) {
+                    modeSelect.disabled = true;
+                    setGoogleBgStatus(`Google Maps の API キーが未設定です。環境変数 ${config.env_name} か、`
+                        + `GUI フォルダの ${config.file_name} にキーを書いてからページを再読み込みしてください`
+                        + ' (環境変数の場合はサーバーの再起動も必要です)。', 'warning');
+                }
+            } catch (error) {
+                modeSelect.disabled = true;
+                setGoogleBgStatus(`Google 背景の設定を取得できません: ${error.message}`, 'error');
+            }
+            updateGoogleBgControls();
         }
 
         function init() {
@@ -2374,6 +5034,7 @@
                         // 矢印の向きを球体の向きに合わせる
                         arrow.setDirection(new THREE.Vector3(1, 0, 0).applyQuaternion(newQuat));
                     }
+                    markWaypointGuidesDirty();
                     // ドラッグ中のみウェイポイント情報をリアルタイムで更新
                     if (transformControls.dragging) {
                         displayWaypointInfo(index, selectedWaypoint.position, selectedWaypoint.userData.attributes);
@@ -2400,6 +5061,12 @@
             dragControls.addEventListener('dragstart', function (event) {
                 orbitControls.enabled = false;
                 transformControls.enabled = false;
+                const index = event.object.userData.waypointIndex;
+                if (event.object !== initialPoseMarker && multiSelectedWaypoints.has(index)) {
+                    multiDragStart = new Map([...multiSelectedWaypoints]
+                        .filter(i => waypoints[i])
+                        .map(i => [i, { x: waypoints[i][0][0], y: waypoints[i][0][1] }]));
+                }
             });
             dragControls.addEventListener('drag', function (event) {
                 // 初期位置マーカーはウェイポイントとは別扱い
@@ -2411,6 +5078,10 @@
                 const index = event.object.userData.waypointIndex;
                 // Z軸を固定
                 event.object.position.z = 0.0;
+                if (multiDragStart) {
+                    moveMultiSelectedWaypoints(event.object);
+                    return;
+                }
 
                 const arrow = event.object.parent.children.find(c => c.name === `waypoint_arrow_${index}`);
                 if (arrow) {
@@ -2438,6 +5109,15 @@
                     syncInitialPoseFieldsFromMarker();
                     setInitialPoseStatus('初期位置を移動しました。「初期位置を保存」で書き込みます。');
                     // 続けて向きを変えられるよう、選択を維持する
+                    suppressNextClickAfterDrag = true;
+                    return;
+                }
+                if (multiDragStart) {
+                    event.object.position.z = 0.0;
+                    moveMultiSelectedWaypoints(event.object);
+                    multiDragStart = null;
+                    if (document.getElementById('auto-orient-waypoints').checked) recalculateAllWaypointOrientations();
+                    // 離したときの click で複数選択が外れないようにする
                     suppressNextClickAfterDrag = true;
                     return;
                 }
@@ -2494,6 +5174,26 @@
             // 各モードのキーボード解除
             window.addEventListener('keydown', (event) => {
                 if (event.key !== 'Escape') return;
+                if (regionSelector && regionSelector.active) {
+                    regionSelector.setActive(false);
+                    setMapBuildStatus('範囲の選択を中止しました。');
+                    return;
+                }
+                if (cropSelector && cropSelector.active) {
+                    cropSelector.setActive(false);
+                    setMapTuneStatus('範囲の選択を中止しました。');
+                    return;
+                }
+                if ((waypointBoxSelector && waypointBoxSelector.active) || (waypointFreehand && waypointFreehand.active)
+                    || (waypointBoxSelectSelector && waypointBoxSelectSelector.active)) {
+                    stopWaypointTools();
+                    document.getElementById('info').innerHTML = 'ウェイポイントのまとめて操作を中止しました。';
+                    return;
+                }
+                if (multiSelectedWaypoints.size > 0 && !isAddingWaypointMode && !isPickingInitialPose) {
+                    clearMultiSelection();
+                    return;
+                }
                 if (isAddingWaypointMode) {
                     toggleAddWaypointMode(null);
                 } else if (isPickingInitialPose) {
@@ -2504,6 +5204,20 @@
             });
             document.getElementById('pgm-show-carve-range')
                     .addEventListener('change', updateCarveRangePreview);
+            document.getElementById('pgm-follow-waypoints').addEventListener('change', (event) => {
+                if (!event.target.checked || !pgmEdit) return;
+                if (waypoints.length === 0) {
+                    setPgmEditStatus('ウェイポイントを置くと、置いた時点でまわりを通行可にします。');
+                    return;
+                }
+                carveAllWaypoints();
+                setPgmEditStatus(`置いてある ${waypoints.length} 個のウェイポイントのまわりと区間を通行可にしました（未保存）。`
+                    + '動かすと塗り直します。「2Dマップを保存」で書き込みます。', 'hud-warning');
+            });
+            document.getElementById('pgm-waypoint-margin').addEventListener('change', () => {
+                if (!carveAllWaypoints()) return;
+                setPgmEditStatus('マージンを変えたので、ウェイポイントのまわりと区間を塗り直しました（未保存）。', 'hud-warning');
+            });
             document.getElementById('pgm-waypoint-margin')
                     .addEventListener('input', updateCarveRangePreview);
             document.getElementById('save-pgm-button').addEventListener('click', savePgmToServer);
@@ -2531,6 +5245,9 @@
             });
             document.getElementById('auto-orient-waypoints').addEventListener('change', (event) => {
                 toggleAutoOrient(event.target.checked);
+            });
+            ['show-waypoint-tolerance', 'show-waypoint-attr-labels'].forEach((id) => {
+                document.getElementById(id).addEventListener('change', markWaypointGuidesDirty);
             });
             document.getElementById('show-distance-labels').addEventListener('change', (event) => {
                 const labelsId = `waypoint-labels-${currentMapName}`;
@@ -2580,6 +5297,12 @@
                 }
             });
             
+            googleBackgroundReady = initGoogleBackground();
+            initMapBuilder();
+            initMapTune();
+            initWaypointTools();
+            initGeoSearch();
+
             const initialMapName = "{{ map_name }}"; 
             if (initialMapName) {
                 currentMapName = initialMapName;
@@ -2596,6 +5319,9 @@
             } else {
                 document.getElementById('loading-message').textContent = "マップを選択してください。";
                 startLoadProcess();
+                // マップを指定せずに開いたときは、デバイスの現在地を原点にして背景を表示する。
+                // 取得できなければ、手入力で保存した原点を使う。
+                useDeviceLocationAsOrigin({ automatic: true });
             }
             animate();
         }
@@ -2611,7 +5337,17 @@
             orbitControls.update();
             labelRenderer.render(scene, camera);
             updateAdaptiveGrid();
-            renderer.render(scene, camera);
+            // 地図が無いときにクリック位置を取る平面 (2 km 四方) を画面中心に置く (検索で遠くへ動いても置けるように)
+            if (groundPlane) groundPlane.position.set(orbitControls.target.x, orbitControls.target.y, 0);
+            if (waypointGuidesDirty) updateWaypointGuides();
+            syncWaypointGuidesVisibility();
+            if (googleBackground) {
+                googleBackground.update();
+                // 3D Tiles の表示中は、地図やウェイポイントがタイルに隠れないよう描き分ける
+                googleBackground.render(renderer, scene, camera);
+            } else {
+                renderer.render(scene, camera);
+            }
         }
 
         // 2Dマップの編集を保存しないまま画面を閉じようとしたら警告する
@@ -2623,14 +5359,36 @@
         });
 
         async function saveWaypointsToServer() {
-            if (!currentMapName) {
-                alert("マップがロードされていません。");
+            const saveName = document.getElementById('wp-save-name').value.trim() || currentMapName;
+            if (!saveName) {
+                alert("保存するウェイポイント名を入力してください。");
+                document.getElementById('wp-save-name').focus();
+                return;
+            }
+            if (!MAP_NAME_PATTERN.test(saveName)) {
+                alert("ウェイポイント名は半角英数字と _ . - だけで入力してください。");
                 return;
             }
             if (waypoints.length === 0) {
                 alert("保存するウェイポイントがありません。");
                 return;
             }
+            const loadedName = document.getElementById('wp-select').dataset.loadedName || currentMapName;
+            const existing = [...document.getElementById('wp-select').options].some(option => option.value === saveName);
+            if (existing && saveName !== loadedName
+                && !confirm(`waypoints/${saveName}.json は既にあります。上書きしますか？`)) {
+                return;
+            }
+
+            // 自律走行で使う [位置, 向き, 属性] に加えて、4 要素目に緯度経度高度を付ける
+            // (waypoint_manager と pcd2pgm_converter.py は 3 要素目までしか読まないので、そのまま使える)。
+            // このマップの原点で計算できないときは付けない (前に保存した値があれば残す)。
+            const withGnss = waypoints.map((wp) => {
+                const gnss = waypointGnss(wp);
+                if (gnss) wp[3] = gnss;
+                return wp.length > 3 ? [wp[0], wp[1], wp[2], wp[3]] : wp.slice(0, 3);
+            });
+            const gnssAdded = waypoints.length > 0 && canComputeWaypointGnss();
 
             try {
                 const response = await fetch('/save_waypoints', {
@@ -2639,12 +5397,20 @@
                         'Content-Type': 'application/json',
                     },
                     body: JSON.stringify({
-                        map_name: currentMapName,
-                        waypoints: waypoints,
+                        map_name: saveName,
+                        waypoints: withGnss,
                     }),
                 });
                 const result = await response.json();
-                alert(result.message); // サーバーからのメッセージを表示
+                if (result.status === 'success') {
+                    addWaypointsToLoadDialog(saveName);
+                    document.getElementById('wp-select').dataset.loadedName = saveName;
+                }
+                alert(result.message + (gnssAdded
+                    ? '\n各ウェイポイントに緯度・経度・高度も保存しました。'
+                    : '\nこのマップの原点 (init_lat_lon_alt.txt) が読み込まれていないため、緯度・経度・高度は付けていません。')
+                    + (gnssAdded && !currentMapName
+                        ? '\n(地図をロードしていないので、いまの Google 背景の原点を基準にした座標で保存しています。)' : '')); // サーバーからのメッセージを表示
             } catch (error) {
                 console.error('ウェイポイントの保存中にエラーが発生しました:', error);
                 alert('ウェイポイントの保存に失敗しました。');
