@@ -402,6 +402,9 @@
                         <span class="legend-swatch legend-swatch--stop"></span> Stop: wait [s]
                     </div>
                     <div class="legend-row">
+                        <span class="legend-swatch legend-swatch--pass_through"></span> Pass through: 障害物を無視して徐行 [m/s]
+                    </div>
+                    <div class="legend-row">
                         <span class="legend-swatch legend-swatch--default"></span> Default
                     </div>
                     <div class="legend-row legend-note">円: 到着と判定する距離 (xy_tolerance)</div>
@@ -527,6 +530,8 @@
                     return 0xffff00; // 黄
                 case 'stop':
                     return 0xff0000; // 赤
+                case 'pass_through':
+                    return 0xff8800; // 橙 (次のウェイポイントまで経路付近の障害物を無視して徐行)
                 default:
                     return 0x00ffff; // 水色 (デフォルト)
             }
@@ -1490,6 +1495,7 @@
                                     <option value="normal" ${attr[key] === 'normal' ? 'selected' : ''}>normal</option>
                                     <option value="slow" ${attr[key] === 'slow' ? 'selected' : ''}>slow</option>
                                     <option value="stop" ${attr[key] === 'stop' ? 'selected' : ''}>stop</option>
+                                    <option value="pass_through" ${attr[key] === 'pass_through' ? 'selected' : ''}>pass_through</option>
                                 </select>
                             `;
                         } else {
@@ -2258,6 +2264,7 @@
         //   到着: 距離 <= xy_tolerance かつ 向きの差 <= yaw_tolerance → 円と扇形
         //   通過: 前のウェイポイントから来た向きで、ウェイポイントを越えた (内積 > 0) → 破線
         //   stop: value 秒止まる → 赤い柱 (高さが秒数に比例) とラベル / slow: value m/s に減速 → ラベル
+        //   pass_through: 次のウェイポイントまで経路付近の障害物を無視し value m/s で徐行 → ラベル
         // =====================================================================
         const WAYPOINT_DEFAULT_XY_TOLERANCE = 1.0;     // waypoint_manager が属性に無いときに使う値
         const WAYPOINT_DEFAULT_YAW_TOLERANCE = 3.14;
@@ -2423,6 +2430,7 @@
                 if (showLabels) {
                     const lines = [`#${index}`];
                     if (attr.type === 'slow') lines[0] += ` 減速 ${formatNumber(attr.value)} m/s`;
+                    if (attr.type === 'pass_through') lines[0] += ` 強制通過 ${formatNumber(attr.value)} m/s`;
                     lines.push(`到着 ${formatNumber(attr.xyTolerance)} m / `
                         + (yawIgnored ? '向き不問' : `±${formatNumber(THREE.MathUtils.radToDeg(attr.yawTolerance), 0)}°`));
                     lines.push(`向き ${formatNumber(THREE.MathUtils.radToDeg(yaw), 0)}°`);

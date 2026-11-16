@@ -400,6 +400,7 @@
 .legend-swatch--normal  { background-color: var(--wp-normal); }
 .legend-swatch--slow    { background-color: var(--wp-slow); }
 .legend-swatch--stop    { background-color: var(--wp-stop); }
+.legend-swatch--pass_through { background-color: var(--wp-pass-through); }
 .legend-swatch--default { background-color: var(--wp-default); }
 
 /* ==========================================================================
@@ -527,6 +528,7 @@
 .waypoint-guide-label--normal { border-left-color: var(--wp-normal, #00ff00); }
 .waypoint-guide-label--slow   { border-left-color: var(--wp-slow, #ffff00); }
 .waypoint-guide-label--stop   { border-left-color: var(--wp-stop, #ff0000); font-weight: bold; }
+.waypoint-guide-label--pass_through { border-left-color: var(--wp-pass-through, #ff8800); font-weight: bold; }
 
 /* ウェイポイントを囲んでまとめて削除するときの枠 */
 .screen-rect-selector {
