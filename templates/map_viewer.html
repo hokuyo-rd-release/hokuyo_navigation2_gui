@@ -402,6 +402,9 @@
                         <span class="legend-swatch legend-swatch--stop"></span> Stop: wait [s]
                     </div>
                     <div class="legend-row">
+                        <span class="legend-swatch legend-swatch--wait"></span> Wait: /start_waypoint を受けるまで停止
+                    </div>
+                    <div class="legend-row">
                         <span class="legend-swatch legend-swatch--pass_through"></span> Pass through: 障害物を無視して徐行 [m/s]
                     </div>
                     <div class="legend-row">
@@ -532,6 +535,8 @@
                     return 0xff0000; // 赤
                 case 'pass_through':
                     return 0xff8800; // 橙 (次のウェイポイントまで経路付近の障害物を無視して徐行)
+                case 'wait':
+                    return 0xff00ff; // 紫 (/start_waypoint を受けるまで停止)
                 default:
                     return 0x00ffff; // 水色 (デフォルト)
             }
@@ -1496,6 +1501,7 @@
                                     <option value="slow" ${attr[key] === 'slow' ? 'selected' : ''}>slow</option>
                                     <option value="stop" ${attr[key] === 'stop' ? 'selected' : ''}>stop</option>
                                     <option value="pass_through" ${attr[key] === 'pass_through' ? 'selected' : ''}>pass_through</option>
+                                    <option value="wait" ${attr[key] === 'wait' ? 'selected' : ''}>wait</option>
                                 </select>
                             `;
                         } else {
@@ -2265,6 +2271,7 @@
         //   通過: 前のウェイポイントから来た向きで、ウェイポイントを越えた (内積 > 0) → 破線
         //   stop: value 秒止まる → 赤い柱 (高さが秒数に比例) とラベル / slow: value m/s に減速 → ラベル
         //   pass_through: 次のウェイポイントまで経路付近の障害物を無視し value m/s で徐行 → ラベル
+        //   wait: /start_waypoint (std_msgs/Empty) を受けるまで停止 → ラベル
         // =====================================================================
         const WAYPOINT_DEFAULT_XY_TOLERANCE = 1.0;     // waypoint_manager が属性に無いときに使う値
         const WAYPOINT_DEFAULT_YAW_TOLERANCE = 3.14;
@@ -2431,6 +2438,7 @@
                     const lines = [`#${index}`];
                     if (attr.type === 'slow') lines[0] += ` 減速 ${formatNumber(attr.value)} m/s`;
                     if (attr.type === 'pass_through') lines[0] += ` 強制通過 ${formatNumber(attr.value)} m/s`;
+                    if (attr.type === 'wait') lines[0] += ' 停止 (start 待ち)';
                     lines.push(`到着 ${formatNumber(attr.xyTolerance)} m / `
                         + (yawIgnored ? '向き不問' : `±${formatNumber(THREE.MathUtils.radToDeg(attr.yawTolerance), 0)}°`));
                     lines.push(`向き ${formatNumber(THREE.MathUtils.radToDeg(yaw), 0)}°`);
