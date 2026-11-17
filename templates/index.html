@@ -76,7 +76,8 @@ hokuyo_nav2_gui
     const ctrlBtn = document.getElementById('ctrl');
 
     function initializeCheckboxes(container) {
-        const checkboxes = container.querySelectorAll('input[type="checkbox"]');
+        // data-option-toggle の付いたトグル（シミュレータ使用など）は確認項目ではないので除外する
+        const checkboxes = container.querySelectorAll('input[type="checkbox"]:not([data-option-toggle])');
         // 実行ボタンが複数ある場合に対応
         const executeBtns = container.querySelectorAll('button[type="submit"]');
 

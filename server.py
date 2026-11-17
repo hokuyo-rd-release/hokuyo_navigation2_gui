@@ -211,7 +211,7 @@ def _append_log(log_path, text):
         print(f"Warning: Failed to write log file {log_path}: {e}")
 
 
-def run_subprocess(command_list, log_path=None):
+def run_subprocess(command_list, log_path=None, extra_env=None):
     """別スレッドでサブプロセスを実行するための関数
 
     log_path が指定されている場合、標準出力を画面と同時にそのファイルへ書き出し、
@@ -222,6 +222,8 @@ def run_subprocess(command_list, log_path=None):
     env = os.environ.copy()
     if log_path:
         env['HOKUYO_GUI_LOG_FILE'] = log_path
+    if extra_env:
+        env.update(extra_env)
     try:
         # Popenを使い、新しいプロセスグループで実行する (preexec_fn=os.setsid)
         # これにより、killall等が親プロセスに影響を与えるのを防ぐ
@@ -2624,8 +2626,11 @@ def trigger_script():
                     command_list.append(mapfile)
                 if wpfile:
                     command_list.append(wpfile)
-                
-            Thread(target=run_subprocess, args=(command_list,)).start()
+
+            # シミュレータを使うかは GUI のトグルで決め、オプション CSV の use_unity_sim より優先させる
+            use_unity_sim = 'true' if request.form.get("use_unity_sim") else 'false'
+            Thread(target=run_subprocess, args=(command_list,),
+                   kwargs={'extra_env': {'USE_UNITY_SIM': use_unity_sim}}).start()
             current_mode = "running"
             return redirect('/navigation_executed')
         else:

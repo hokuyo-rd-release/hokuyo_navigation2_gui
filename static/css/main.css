@@ -227,6 +227,12 @@
     color: var(--color-success);
 }
 
+/* 自律走行ポップアップのシミュレータ使用トグル */
+.sim-toggle {
+    max-width: 400px;
+    margin: var(--space-4) auto 0;
+}
+
 /* ポップアップ下部の実行ボタン */
 .popup-actions {
     margin-top: var(--space-4);
