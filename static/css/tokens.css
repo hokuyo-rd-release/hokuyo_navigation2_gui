@@ -81,6 +81,22 @@
     --wp-wait: #ff00ff;
     --wp-default: #00ffff;
 
+    /* --- 配色: 通過モード設定の3D表示（描画色と凡例で共用） --------------- */
+    --pt-deadband: #ffd400;            /* 不感帯 (無視する範囲) */
+    --pt-detect: #2ecc71;              /* 検出帯 (停止判定する範囲) */
+    --pt-detect-stop: #ff3b3b;         /* 検出帯で止まる判定になったとき */
+    --pt-margin: #4fc3f7;              /* local_costmap に入れない範囲 */
+    --pt-path: #ffffff;                /* 経路の中心線 */
+    --pt-footprint: #00e5ff;           /* 車体の外形 (footprint) */
+    --pt-robot: #9aa7b8;               /* 色なしモデル (STL) の色 */
+    --pt-sensor: #ff5252;              /* YVT の位置 */
+    --pt-person: #ff8a65;              /* 試しに置く人 */
+    --pt-cell-ignored: #fff176;        /* 人のセル: 不感帯で無視 */
+    --pt-cell-detect: #ff3b3b;         /* 人のセル: 検出 */
+    --pt-cell-costmap: #b388ff;        /* 人のセル: local_costmap にだけ入る */
+    --pt-grid-major: #555555;
+    --pt-grid-minor: #333333;
+
     /* --- タイポグラフィ --------------------------------------------------- */
     --font-base: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Hiragino Sans',
                  'Noto Sans JP', Meiryo, Roboto, sans-serif;

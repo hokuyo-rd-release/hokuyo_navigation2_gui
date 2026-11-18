@@ -59,6 +59,7 @@ except ImportError as e:
     mapping_diagnostics = None
     print(f"Warning: mapping_diagnostics could not be imported. Config check is disabled: {e}")
 
+import pass_through_config
 try:
     import log_insight
 except ImportError as e:
@@ -2683,6 +2684,98 @@ def trigger_script():
     else:
         print(f"Unknown command received: {command}")
         return "Unknown command", 400
+
+# ---------------------------------------------------------------------------
+# 通過モード (pass_through) の設定
+#   obstacle_monitor.yaml の pass_through_* などを、ロボットのモデル上に不感帯・検出帯を
+#   描きながら編集する。保存は yaml の値だけを書き換え (コメントは残す)、
+#   必要なら実行中の obstacle_monitor にも ros2 param load で反映する。
+# ---------------------------------------------------------------------------
+OBSTACLE_MONITOR_YAML = os.path.join(CONFIG_DIR, 'obstacle_monitor.yaml')
+ROBOT_URDF_DIR = os.path.join(HOKUYO_NAV2_PKG_PATH, 'urdf')
+ROBOT_MESH_DIR = os.path.join(ROBOT_URDF_DIR, 'meshes')
+ROBOT_MESH_EXTENSIONS = {'.stl', '.obj', '.mtl', '.dae', '.png', '.jpg'}
+
+
+def _robot_sensor_origin(link='yvt'):
+    """URDF (wizurg.xacro) から、センサ link の base_link に対する位置を読む。無ければ None。"""
+    xacro_path = os.path.join(ROBOT_URDF_DIR, 'wizurg.xacro')
+    try:
+        with open(xacro_path, 'r', encoding='utf-8') as f:
+            text = f.read()
+    except OSError:
+        return None
+    for joint in re.findall(r'<joint\b.*?</joint>', text, re.DOTALL):
+        if re.search(r'<child\s+link="' + re.escape(link) + r'"', joint):
+            m = re.search(r'<origin\s+xyz="([^"]+)"', joint)
+            if m:
+                try:
+                    return [float(v) for v in m.group(1).split()]
+                except ValueError:
+                    return None
+    return None
+
+
+@app.route('/pass_through_config', methods=['GET'])
+def pass_through_config_page():
+    meshes = []
+    if os.path.isdir(ROBOT_MESH_DIR):
+        for name in sorted(os.listdir(ROBOT_MESH_DIR)):
+            ext = os.path.splitext(name)[1].lower()
+            if ext in ('.stl', '.obj', '.dae'):
+                size_mb = os.path.getsize(os.path.join(ROBOT_MESH_DIR, name)) / 1e6
+                meshes.append({'name': name, 'size_mb': round(size_mb, 1)})
+    return render_template('pass_through_config.html', meshes=meshes)
+
+
+@app.route('/api/pass_through_config', methods=['GET'])
+def get_pass_through_config():
+    try:
+        values, reference = pass_through_config.load(OBSTACLE_MONITOR_YAML)
+    except (OSError, yaml.YAMLError) as e:
+        return jsonify({'status': 'error', 'message': f'obstacle_monitor.yaml を読めません: {e}'}), 500
+    spec = {k: {'type': t.__name__, 'min': lo, 'max': hi, 'description': d}
+            for k, (t, lo, hi, d) in pass_through_config.EDITABLE_PARAMS.items()}
+    return jsonify({'status': 'success', 'values': values, 'reference': reference, 'spec': spec,
+                    'sensor_origin': _robot_sensor_origin('yvt'),
+                    'yaml_path': OBSTACLE_MONITOR_YAML})
+
+
+@app.route('/api/pass_through_config/live', methods=['GET'])
+def get_pass_through_config_live():
+    live = pass_through_config.read_live()
+    if live is None:
+        return jsonify({'status': 'success', 'running': False})
+    return jsonify({'status': 'success', 'running': True, 'values': live})
+
+
+@app.route('/api/pass_through_config', methods=['POST'])
+def save_pass_through_config():
+    body = request.get_json(silent=True) or {}
+    try:
+        values = pass_through_config.validate(body.get('values') or {})
+        changed = pass_through_config.save(OBSTACLE_MONITOR_YAML, values)
+    except ValueError as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except OSError as e:
+        return jsonify({'status': 'error', 'message': f'obstacle_monitor.yaml に書き込めません: {e}'}), 500
+    result = {'status': 'success', 'changed': changed,
+              'message': ('保存しました: ' + ', '.join(changed)) if changed else '変更はありません (保存済みの値と同じです)'}
+    if body.get('apply_live'):
+        ok, output = pass_through_config.apply_live(values)
+        result['live'] = {'ok': ok, 'output': output}
+    return jsonify(result)
+
+
+@app.route('/robot_mesh/<path:filename>')
+def robot_mesh(filename):
+    """ロボットの CAD モデル (urdf/meshes) を返す。"""
+    if os.path.splitext(filename)[1].lower() not in ROBOT_MESH_EXTENSIONS:
+        return 'Not allowed', 403
+    if not _is_safe_path(os.path.join(ROBOT_MESH_DIR, filename), ROBOT_MESH_DIR):
+        return 'Not allowed', 403
+    return send_from_directory(ROBOT_MESH_DIR, filename)
+
 
 if __name__ == '__main__':
     # 証明書と秘密鍵を環境変数で指定すると HTTPS で起動する。

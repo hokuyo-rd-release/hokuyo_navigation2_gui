@@ -1,0 +1,113 @@
+<body>
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>通過モード設定</title>
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/pass-through-config.css') }}">
+    <script type="importmap">
+    {
+        "imports": {
+            "three": "{{ url_for('static', filename='js/three/three.js/build/three.module.js') }}",
+            "three/addons/": "{{ url_for('static', filename='js/three/three.js/examples/jsm/') }}"
+        }
+    }
+    </script>
+</head>
+<body class="pt-config">
+    <div class="pt-layout">
+        <!-- 3D 表示 -->
+        <main class="pt-viewer" id="pt-viewer">
+            <div class="pt-toolbar">
+                <span class="pt-toolbar__label">視点</span>
+                <button type="button" class="pt-tool" data-view="oblique">斜め</button>
+                <button type="button" class="pt-tool" data-view="top">真上</button>
+                <button type="button" class="pt-tool" data-view="behind">ロボットの後ろ</button>
+                <span class="pt-toolbar__label">モデル</span>
+                <select id="pt-mesh" class="pt-tool">
+                    {% for m in meshes %}
+                    <option value="{{ m.name }}" {% if m.name.endswith('.stl') %}selected{% endif %}>{{ m.name }} ({{ m.size_mb }} MB)</option>
+                    {% endfor %}
+                    <option value="">表示しない</option>
+                </select>
+            </div>
+            <div class="pt-hint">
+                ● をドラッグすると帯の幅・長さを変えられます。右ドラッグで移動、ホイールで拡大縮小。
+            </div>
+            <div class="pt-loading" id="pt-loading" hidden></div>
+            <div class="pt-verdict" id="pt-verdict" hidden></div>
+        </main>
+
+        <!-- 設定パネル -->
+        <aside class="pt-panel">
+            <h1 class="pt-panel__title">通過モード設定</h1>
+            <p class="pt-panel__sub" id="pt-yaml-path"></p>
+
+            <div class="pt-live" id="pt-live">実行中の obstacle_monitor を確認しています…</div>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title">よく使う設定</h2>
+                <div class="pt-presets">
+                    <button type="button" class="pt-btn" data-preset="all">左右とも無視 (強制通過)</button>
+                    <button type="button" class="pt-btn" data-preset="left">左側だけ無視</button>
+                    <button type="button" class="pt-btn" data-preset="right">右側だけ無視</button>
+                    <button type="button" class="pt-btn" data-preset="none">無視しない</button>
+                </div>
+            </section>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title"><span class="pt-swatch pt-swatch--deadband"></span>不感帯 (無視する範囲)</h2>
+                <div id="pt-fields-deadband"></div>
+            </section>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title"><span class="pt-swatch pt-swatch--detect"></span>検出帯 (停止判定する範囲)</h2>
+                <div id="pt-fields-detect"></div>
+                <p class="pt-note" id="pt-capacity"></p>
+            </section>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title"><span class="pt-swatch pt-swatch--margin"></span>local_costmap・その他</h2>
+                <div id="pt-fields-other"></div>
+            </section>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title"><span class="pt-swatch pt-swatch--person"></span>人を置いて試す</h2>
+                <label class="pt-check">
+                    <input type="checkbox" id="pt-person-on" checked> 人 (直径 0.4 m) を置く (ドラッグで移動)
+                </label>
+                <div class="pt-person-result" id="pt-person-result"></div>
+                <p class="pt-note">
+                    実際には LiDAR から見えている面のセルしか数えないため、ここでの数より少なくなります。
+                </p>
+            </section>
+
+            <div class="pt-actions">
+                <button type="button" class="pt-btn" id="pt-reload">ファイルから読み直す</button>
+                <button type="button" class="pt-btn pt-btn--primary" id="pt-save">保存</button>
+                <button type="button" class="pt-btn pt-btn--success" id="pt-save-apply">保存して走行中にも反映</button>
+            </div>
+            <p class="pt-message" id="pt-message"></p>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title">凡例</h2>
+                <ul class="pt-legend">
+                    <li><span class="pt-swatch pt-swatch--deadband"></span>不感帯: 人も含めて無視 (停止しない・DWB も避けない)</li>
+                    <li><span class="pt-swatch pt-swatch--detect"></span>検出帯: セル数がしきい値以上で停止 (止まる判定のとき赤)</li>
+                    <li><span class="pt-swatch pt-swatch--margin"></span>local_costmap に入れない範囲 (停止判定には使う)</li>
+                    <li><span class="pt-swatch pt-swatch--footprint"></span>車体の外形 (footprint)</li>
+                    <li><span class="pt-swatch pt-swatch--path"></span>経路の中心線 (前方 = 赤い矢印の向き)</li>
+                </ul>
+                <p class="pt-note">
+                    左右はロボットの進行方向から見た向きです。保存した値はナビゲーションを次に起動したときに使われます。
+                    「保存して走行中にも反映」は、実行中の obstacle_monitor にもその場で送ります。
+                </p>
+            </section>
+        </aside>
+    </div>
+
+    <script type="module" src="{{ url_for('static', filename='js/pass_through_config.js') }}"></script>
+</body>
+</html>

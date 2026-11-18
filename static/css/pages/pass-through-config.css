@@ -1,0 +1,357 @@
+/* ==========================================================================
+   pages/pass-through-config.css — 通過モード設定（pass_through_config.html）専用
+   --------------------------------------------------------------------------
+   3Dビューアと同じダークUI。色は tokens.css の --viewer-* / --pt-* を使う。
+   左に3D表示、右に設定パネル。狭い画面では縦に積む。
+   ========================================================================== */
+
+.pt-config {
+    margin: 0;
+    background-color: var(--viewer-bg);
+    color: var(--viewer-text);
+}
+
+.pt-layout {
+    display: flex;
+    height: 100vh;
+}
+
+/* --- 3D表示 ---------------------------------------------------------------- */
+.pt-viewer {
+    position: relative;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+}
+
+.pt-viewer canvas {
+    display: block;
+}
+
+.pt-viewer.is-dragging,
+.pt-viewer.is-hover-handle {
+    cursor: grab;
+}
+
+.pt-toolbar {
+    position: absolute;
+    top: var(--space-2);
+    left: var(--space-2);
+    z-index: var(--z-viewer-hud);
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: var(--space-1);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-overlay);
+}
+
+.pt-toolbar__label {
+    margin-left: var(--space-2);
+    color: var(--viewer-text-muted);
+    font-size: var(--fs-xs);
+}
+
+.pt-tool {
+    padding: var(--space-1) var(--space-2);
+    border: 1px solid var(--viewer-border);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-control-bg);
+    color: var(--viewer-text);
+    font-size: var(--fs-xs);
+    cursor: pointer;
+}
+
+select.pt-tool {
+    max-width: 220px;
+}
+
+.pt-tool:hover {
+    background: var(--viewer-control-hover);
+}
+
+.pt-hint {
+    position: absolute;
+    bottom: var(--space-2);
+    left: var(--space-2);
+    z-index: var(--z-viewer-hud);
+    padding: var(--space-1) var(--space-2);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-overlay);
+    color: var(--viewer-text-muted);
+    font-size: var(--fs-xs);
+}
+
+.pt-loading {
+    position: absolute;
+    top: 50%;
+    left: 50%;
+    z-index: var(--z-viewer-loading);
+    transform: translate(-50%, -50%);
+    padding: var(--space-2) var(--space-5);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-overlay-strong);
+    pointer-events: none;
+}
+
+/* 人を置いたときの判定 (右上) */
+.pt-verdict {
+    position: absolute;
+    top: var(--space-2);
+    right: var(--space-2);
+    z-index: var(--z-viewer-hud);
+    padding: var(--space-2) var(--space-3);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-overlay-strong);
+    font-weight: var(--fw-bold);
+}
+
+.pt-verdict.is-stop { color: var(--pt-detect-stop); }
+.pt-verdict.is-pass { color: var(--pt-detect); }
+
+/* 3D上の寸法ラベル (CSS2DRenderer) */
+.pt-label {
+    padding: 1px var(--space-1);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-overlay-strong);
+    color: var(--viewer-text);
+    font-size: var(--fs-xs);
+    white-space: nowrap;
+    pointer-events: none;
+}
+
+/* --- 設定パネル ------------------------------------------------------------ */
+.pt-panel {
+    width: 400px;
+    flex-shrink: 0;
+    overflow-y: auto;
+    padding: var(--space-4);
+    border-left: 1px solid var(--viewer-border);
+    background: var(--viewer-surface);
+}
+
+.pt-panel__title {
+    margin: 0;
+    color: var(--viewer-accent);
+    font-size: var(--fs-xl);
+}
+
+.pt-panel__sub {
+    margin: var(--space-1) 0 var(--space-3);
+    color: var(--viewer-text-disabled);
+    font-size: var(--fs-xs);
+    word-break: break-all;
+}
+
+.pt-live {
+    padding: var(--space-2);
+    border: 1px solid var(--viewer-border);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-surface-alt);
+    font-size: var(--fs-xs);
+}
+
+.pt-live.is-running { border-color: var(--pt-detect); }
+.pt-live.is-diff { border-color: var(--viewer-warning); }
+
+.pt-section {
+    margin-top: var(--space-4);
+}
+
+.pt-section__title {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin: 0 0 var(--space-2);
+    color: var(--viewer-text);
+    font-size: var(--fs-md);
+}
+
+.pt-presets {
+    display: flex;
+    flex-wrap: wrap;
+    gap: var(--space-1);
+}
+
+/* 1項目 = ラベル行 + スライダー行 */
+.pt-field {
+    margin-bottom: var(--space-3);
+}
+
+.pt-field__head {
+    display: flex;
+    justify-content: space-between;
+    gap: var(--space-2);
+    font-size: var(--fs-sm);
+}
+
+.pt-field__name {
+    font-weight: var(--fw-medium);
+}
+
+.pt-field__key {
+    color: var(--viewer-text-disabled);
+    font-family: var(--font-mono);
+    font-size: var(--fs-xs);
+}
+
+.pt-field__row {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+}
+
+.pt-field__row input[type="range"] {
+    flex: 1;
+}
+
+.pt-field__row input[type="number"] {
+    width: 80px;
+    padding: 2px var(--space-1);
+    border: 1px solid var(--viewer-border);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-control-bg);
+    color: var(--viewer-text);
+}
+
+.pt-field__derived {
+    min-width: 70px;
+    color: var(--viewer-text-muted);
+    font-size: var(--fs-xs);
+    text-align: right;
+}
+
+.pt-field__desc {
+    margin: 2px 0 0;
+    color: var(--viewer-text-muted);
+    font-size: var(--fs-xs);
+}
+
+/* 保存済みの値から変えた項目 */
+.pt-field.is-changed .pt-field__name {
+    color: var(--viewer-highlight);
+}
+
+.pt-field.is-changed .pt-field__name::after {
+    content: " (未保存)";
+    font-weight: var(--fw-normal);
+}
+
+.pt-note {
+    margin: var(--space-1) 0 0;
+    color: var(--viewer-text-muted);
+    font-size: var(--fs-xs);
+}
+
+.pt-note.is-warning {
+    color: var(--viewer-warning);
+}
+
+.pt-check {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    font-size: var(--fs-sm);
+}
+
+.pt-person-result {
+    margin-top: var(--space-2);
+    font-size: var(--fs-sm);
+}
+
+.pt-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: var(--space-2);
+    margin-top: var(--space-5);
+}
+
+.pt-btn {
+    padding: var(--space-1) var(--space-3);
+    border: 1px solid var(--viewer-border);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-control-bg);
+    color: var(--viewer-text);
+    font-size: var(--fs-sm);
+    cursor: pointer;
+}
+
+.pt-btn:hover:not(:disabled) { background: var(--viewer-control-hover); }
+.pt-btn:disabled { background: var(--viewer-control-disabled); color: var(--viewer-text-disabled); cursor: not-allowed; }
+.pt-btn--primary { border-color: var(--color-primary); background: var(--color-primary); color: #fff; }
+.pt-btn--primary:hover:not(:disabled) { background: var(--color-primary-hover); }
+.pt-btn--success { border-color: var(--color-success); background: var(--color-success); color: #fff; }
+.pt-btn--success:hover:not(:disabled) { background: var(--color-success-hover); }
+
+.pt-message {
+    min-height: 1.2em;
+    margin: var(--space-2) 0 0;
+    font-size: var(--fs-sm);
+    white-space: pre-wrap;
+}
+
+.pt-message.is-error { color: var(--viewer-danger); }
+.pt-message.is-success { color: var(--pt-detect); }
+
+.pt-legend {
+    margin: 0;
+    padding: 0;
+    list-style: none;
+    font-size: var(--fs-xs);
+}
+
+.pt-legend li {
+    display: flex;
+    align-items: center;
+    gap: var(--space-2);
+    margin-bottom: var(--space-1);
+}
+
+/* 色見本 */
+.pt-swatch {
+    display: inline-block;
+    flex-shrink: 0;
+    width: 14px;
+    height: 14px;
+    border-radius: var(--radius-sm);
+}
+
+.pt-swatch--deadband { background: var(--pt-deadband); }
+.pt-swatch--detect { background: var(--pt-detect); }
+.pt-swatch--margin { background: var(--pt-margin); }
+.pt-swatch--footprint { background: var(--pt-footprint); }
+.pt-swatch--path { background: var(--pt-path); }
+.pt-swatch--person { background: var(--pt-person); }
+.pt-swatch--cell-detect { background: var(--pt-cell-detect); }
+.pt-swatch--cell-ignored { background: var(--pt-cell-ignored); }
+.pt-swatch--cell-hidden { background: var(--pt-margin); }
+.pt-swatch--cell-costmap { background: var(--pt-cell-costmap); }
+
+/* --- 狭い画面: 3D表示の下に設定パネル -------------------------------------- */
+@media screen and (max-width: 900px) {
+    .pt-layout {
+        flex-direction: column;
+        height: auto;
+    }
+
+    .pt-viewer {
+        flex: none;
+        height: 60vh;
+    }
+
+    /* ツールバーと重ならないよう、判定はヒントの上に出す */
+    .pt-verdict {
+        top: auto;
+        right: var(--space-2);
+        bottom: 56px;
+        left: var(--space-2);
+    }
+
+    .pt-panel {
+        width: auto;
+        border-top: 1px solid var(--viewer-border);
+        border-left: none;
+    }
+}
