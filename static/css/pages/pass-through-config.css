@@ -1,5 +1,5 @@
 /* ==========================================================================
-   pages/pass-through-config.css — 通過モード設定（pass_through_config.html）専用
+   pages/pass-through-config.css — 障害物検出設定（pass_through_config.html）専用
    --------------------------------------------------------------------------
    3Dビューアと同じダークUI。色は tokens.css の --viewer-* / --pt-* を使う。
    左に3D表示、右に設定パネル。狭い画面では縦に積む。
@@ -107,6 +107,7 @@ select.pt-tool {
     font-weight: var(--fw-bold);
 }
 
+.pt-verdict { white-space: pre-line; }
 .pt-verdict.is-stop { color: var(--pt-detect-stop); }
 .pt-verdict.is-pass { color: var(--pt-detect); }
 
@@ -133,7 +134,7 @@ select.pt-tool {
 
 .pt-panel__title {
     margin: 0;
-    color: var(--viewer-accent);
+    color: var(--pt-accent);
     font-size: var(--fs-xl);
 }
 
@@ -328,6 +329,16 @@ select.pt-tool {
 .pt-swatch--cell-ignored { background: var(--pt-cell-ignored); }
 .pt-swatch--cell-hidden { background: var(--pt-margin); }
 .pt-swatch--cell-costmap { background: var(--pt-cell-costmap); }
+.pt-swatch--cell-unseen { background: var(--pt-cell-unseen); }
+.pt-swatch--obstacle-seen { background: var(--pt-obstacle-seen); }
+.pt-swatch--obstacle-unseen { background: var(--pt-obstacle-unseen); }
+.pt-swatch--fov { background: var(--pt-fov); }
+.pt-swatch--cov-ok { background: var(--pt-cov-ok); }
+.pt-swatch--cov-low { background: var(--pt-cov-low); }
+.pt-swatch--cov-rear { background: var(--pt-cov-rear); }
+.pt-swatch--cov-out { background: var(--pt-cov-out); }
+.pt-cov-pass { white-space: pre-line; font-variant-numeric: tabular-nums; }
+.pt-cov-mode { width: 100%; margin: 2px 0 6px; }
 
 /* --- 狭い画面: 3D表示の下に設定パネル -------------------------------------- */
 @media screen and (max-width: 900px) {
@@ -354,4 +365,41 @@ select.pt-tool {
         border-top: 1px solid var(--viewer-border);
         border-left: none;
     }
+}
+
+/* 属性のタブ (色は Map Viewer のウェイポイントの色) */
+.pt-type-tabs { display: flex; flex-wrap: wrap; gap: 6px; }
+.pt-type-tab {
+    border: 1px solid var(--viewer-border);
+    border-left: 4px solid var(--pt-type-color, var(--viewer-border));
+    background: var(--viewer-control-bg);
+    color: var(--viewer-text);
+    border-radius: var(--radius-sm);
+    padding: 4px 10px;
+    cursor: pointer;
+    font: inherit;
+}
+.pt-type-tab:hover { background: var(--viewer-control-hover); }
+.pt-type-tab.is-active { background: var(--viewer-surface); border-color: var(--pt-accent); border-left-color: var(--pt-type-color); font-weight: bold; }
+.pt-type-tab.is-changed::after { content: " ●"; color: var(--viewer-highlight); }
+.pt-type-tab:focus-visible { outline: 2px solid var(--pt-accent); outline-offset: 2px; }
+
+/* 編集中の対象 (属性 / ウェイポイント) */
+.pt-edit-target { margin: 6px 0 0; font-weight: bold; color: var(--pt-accent); }
+.pt-edit-target.is-waypoint { color: var(--wp-pass-through); }
+
+/* ウェイポイント個別の設定 */
+.pt-wp-row { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; }
+.pt-wp-row label { min-width: 7em; color: var(--viewer-text-muted); }
+.pt-wp-row select { flex: 1; min-width: 0; }
+.pt-field.is-override { outline: 2px solid var(--wp-pass-through); outline-offset: 2px; border-radius: var(--radius-sm); }
+.pt-field__reset {
+    margin-left: 6px;
+    padding: 2px 6px;
+    border: 1px solid var(--viewer-border);
+    border-radius: var(--radius-sm);
+    background: var(--viewer-control-bg);
+    color: var(--viewer-text);
+    font-size: 0.85em;
+    cursor: pointer;
 }

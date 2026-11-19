@@ -4,7 +4,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>通過モード設定</title>
+    <title>障害物検出設定</title>
     <link rel="stylesheet" href="{{ url_for('static', filename='css/main.css') }}">
     <link rel="stylesheet" href="{{ url_for('static', filename='css/pages/pass-through-config.css') }}">
     <script type="importmap">
@@ -42,13 +42,49 @@
 
         <!-- 設定パネル -->
         <aside class="pt-panel">
-            <h1 class="pt-panel__title">通過モード設定</h1>
+            <h1 class="pt-panel__title">障害物検出設定</h1>
             <p class="pt-panel__sub" id="pt-yaml-path"></p>
 
             <div class="pt-live" id="pt-live">実行中の obstacle_monitor を確認しています…</div>
 
             <section class="pt-section">
-                <h2 class="pt-section__title">よく使う設定</h2>
+                <h2 class="pt-section__title">ウェイポイントの属性</h2>
+                <div class="pt-type-tabs" id="pt-type-tabs" role="group" aria-label="編集する属性"></div>
+                <p class="pt-note">
+                    検出範囲は、走っている区間 (到着したウェイポイントから次のウェイポイントまで) の属性で決まります。
+                    属性を選ぶと、その属性の範囲を表示・編集します (● 付きは保存していない変更あり)。
+                    ウェイポイント走行していないときは normal を使います。
+                </p>
+                <p class="pt-edit-target" id="pt-edit-target"></p>
+            </section>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title">ウェイポイント個別の設定</h2>
+                <div class="pt-wp-row">
+                    <label for="pt-wp-file">ファイル</label>
+                    <select id="pt-wp-file" class="pt-tool"></select>
+                </div>
+                <div class="pt-wp-row">
+                    <label for="pt-wp-index">ウェイポイント</label>
+                    <select id="pt-wp-index" class="pt-tool" disabled>
+                        <option value="">(属性の設定を編集)</option>
+                    </select>
+                </div>
+                <p class="pt-note" id="pt-wp-status"></p>
+                <div class="pt-presets">
+                    <button type="button" class="pt-btn" id="pt-wp-clear" disabled>このウェイポイントの個別設定をすべて消す</button>
+                    <button type="button" class="pt-btn pt-btn--success" id="pt-wp-save" disabled>ウェイポイントファイルに保存</button>
+                </div>
+                <p class="pt-note">
+                    ウェイポイントを選ぶと、その属性の値に個別設定を重ねた範囲を表示し、スライダーや ● の変更は
+                    そのウェイポイントだけの個別設定になります (オレンジ枠の項目。「既定に戻す」で属性の値に戻ります)。
+                    保存先はウェイポイントファイルの属性の zone_&lt;項目&gt; で、位置や他の属性は変えません。
+                    属性の設定の保存 (下の「保存」) とは別です。
+                </p>
+            </section>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title">不感帯のよく使う設定 (<span id="pt-type-current"></span>)</h2>
                 <div class="pt-presets">
                     <button type="button" class="pt-btn" data-preset="all">左右とも無視 (強制通過)</button>
                     <button type="button" class="pt-btn" data-preset="left">左側だけ無視</button>
@@ -74,13 +110,58 @@
             </section>
 
             <section class="pt-section">
-                <h2 class="pt-section__title"><span class="pt-swatch pt-swatch--person"></span>人を置いて試す</h2>
-                <label class="pt-check">
-                    <input type="checkbox" id="pt-person-on" checked> 人 (直径 0.4 m) を置く (ドラッグで移動)
-                </label>
-                <div class="pt-person-result" id="pt-person-result"></div>
+                <h2 class="pt-section__title"><span class="pt-swatch pt-swatch--fov"></span>YVT で見える範囲</h2>
+                <label class="pt-check"><input type="checkbox" id="pt-cov-fov" checked> YVT の視野 (水平・垂直の視野の境界面)</label>
+                <label class="pt-check"><input type="checkbox" id="pt-cov-volume"> 点群</label>
+                <select id="pt-cov-volume-mode" class="pt-tool pt-cov-mode" aria-label="点群の表示内容">
+                    <option value="counted">障害物として数える空間だけ (床から 0.10〜1.5 m など)</option>
+                    <option value="fov">視野全体 (緑 = 数える / 紫 = 見えているが数えない)</option>
+                </select>
+                <label class="pt-check"><input type="checkbox" id="pt-cov-floor" checked> 床の検出マップ (物の高さ別)</label>
+                <div class="pt-field">
+                    <div class="pt-field__head">
+                        <span class="pt-field__name">物の高さ [m] (床の検出マップ・試しに置く障害物で共通)</span><span class="pt-field__key" id="pt-cov-height-value"></span>
+                    </div>
+                    <div class="pt-field__row">
+                        <input type="range" id="pt-cov-height" min="0.10" max="2.00" step="0.05" value="0.40">
+                    </div>
+                </div>
+                <ul class="pt-legend">
+                    <li><span class="pt-swatch pt-swatch--cov-ok"></span>検出される (物のどこかが視野内・床から障害物の高さの範囲内)</li>
+                    <li><span class="pt-swatch pt-swatch--cov-low"></span>下方の死角: 低すぎて視野の下端より下に隠れる</li>
+                    <li><span class="pt-swatch pt-swatch--cov-rear"></span>後方の死角: 水平視野の外</li>
+                    <li><span class="pt-swatch pt-swatch--cov-out"></span>範囲外 (センサからの水平距離 min_range 未満・max_range 超)</li>
+                </ul>
+                <p class="pt-note pt-cov-pass" id="pt-cov-pass"></p>
                 <p class="pt-note">
-                    実際には LiDAR から見えている面のセルしか数えないため、ここでの数より少なくなります。
+                    点群が視野の一部しか覆わないのは、obstacle_monitor が床から min_obstacle_height〜
+                    max_obstacle_height (0.10〜1.5 m) の点だけを障害物として数え、センサの近く (水平 min_range 未満)
+                    と自車体の点を除くためです。視野の上の方 (8 m 先で高さ約 6 m まで) は見えていても使いません。
+                    「視野全体」にすると、使う部分と使わない部分を色分けして表示します。
+                </p>
+                <p class="pt-note">
+                    視野は obstacle_monitor.yaml の sensor_horizontal_fov_deg・sensor_min_elevation_deg と、
+                    YVT-35LX の仕様の上限 +35°、取り付け位置・向きは URDF (wizurg.xacro) の yvt から描いています。
+                    判定は obstacle_monitor と同じです (水平距離 min_range〜max_range、床から
+                    min_obstacle_height〜max_obstacle_height、車体の外形 + self_filter_margin を除く)。
+                </p>
+            </section>
+
+            <section class="pt-section">
+                <h2 class="pt-section__title"><span class="pt-swatch pt-swatch--obstacle-seen"></span>障害物を置いて試す</h2>
+                <label class="pt-check">
+                    <input type="checkbox" id="pt-obstacle-on" checked> 障害物 (0.4 m 角) を置く (ドラッグで移動。高さは「YVT で見える範囲」の物の高さ)
+                </label>
+                <ul class="pt-legend">
+                    <li><span class="pt-swatch pt-swatch--obstacle-seen"></span>障害物が緑: YVT で検出中 (どこか 1 セルでも見えている)</li>
+                    <li><span class="pt-swatch pt-swatch--obstacle-unseen"></span>障害物が灰: YVT から検出できない (高さや位置を変えて試す)</li>
+                </ul>
+                <div class="pt-person-result" id="pt-obstacle-result"></div>
+                <p class="pt-note">
+                    YVT から見えるかどうかは、上の「床の検出マップ」と同じ判定でセルごとに決めます
+                    (見えないセルは灰色で、停止判定にも local_costmap にも入りません)。
+                    実際には見えている面のセルしか数えないため、ここでの数より少なくなります。
+                    また、以前に見えていたセルは死角に入っても記憶 (memory_timeout) で残ります。
                 </p>
             </section>
 
@@ -95,13 +176,14 @@
                 <h2 class="pt-section__title">凡例</h2>
                 <ul class="pt-legend">
                     <li><span class="pt-swatch pt-swatch--deadband"></span>不感帯: 人も含めて無視 (停止しない・DWB も避けない)</li>
-                    <li><span class="pt-swatch pt-swatch--detect"></span>検出帯: セル数がしきい値以上で停止 (止まる判定のとき赤)</li>
+                    <li><span class="pt-swatch pt-swatch--detect"></span>検出帯: セル数がしきい値以上で停止 (止まる判定のとき赤)。前後・左右の長さはそれぞれ設定できます</li>
                     <li><span class="pt-swatch pt-swatch--margin"></span>local_costmap に入れない範囲 (停止判定には使う)</li>
                     <li><span class="pt-swatch pt-swatch--footprint"></span>車体の外形 (footprint)</li>
                     <li><span class="pt-swatch pt-swatch--path"></span>経路の中心線 (前方 = 赤い矢印の向き)</li>
                 </ul>
                 <p class="pt-note">
-                    左右はロボットの進行方向から見た向きです。保存した値はナビゲーションを次に起動したときに使われます。
+                    左右はロボットの進行方向から見た向きです。表示しているのは選んでいる属性の範囲です。
+                    保存した値はナビゲーションを次に起動したときに使われます。
                     「保存して走行中にも反映」は、実行中の obstacle_monitor にもその場で送ります。
                 </p>
             </section>

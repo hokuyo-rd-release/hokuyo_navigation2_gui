@@ -18,6 +18,8 @@
     --color-warning-hover: #d39e00;
     --color-secondary: #6c757d;        /* 補助操作・キャンセル */
     --color-secondary-hover: #5a6268;
+    --color-obstacle: #7b1fa2;         /* 障害物検出設定 */
+    --color-obstacle-hover: #6a1b9a;
 
     /* --- 配色: 面と文字 --------------------------------------------------- */
     --color-bg: #f4f7f9;               /* ページ背景 */
@@ -81,7 +83,8 @@
     --wp-wait: #ff00ff;
     --wp-default: #00ffff;
 
-    /* --- 配色: 通過モード設定の3D表示（描画色と凡例で共用） --------------- */
+    /* --- 配色: 障害物検出設定の3D表示（描画色と凡例で共用） --------------- */
+    --pt-accent: #ce93d8;              /* 障害物検出設定の見出し (ダーク背景上の紫) */
     --pt-deadband: #ffd400;            /* 不感帯 (無視する範囲) */
     --pt-detect: #2ecc71;              /* 検出帯 (停止判定する範囲) */
     --pt-detect-stop: #ff3b3b;         /* 検出帯で止まる判定になったとき */
@@ -94,6 +97,14 @@
     --pt-cell-ignored: #fff176;        /* 人のセル: 不感帯で無視 */
     --pt-cell-detect: #ff3b3b;         /* 人のセル: 検出 */
     --pt-cell-costmap: #b388ff;        /* 人のセル: local_costmap にだけ入る */
+    --pt-cell-unseen: #9e9e9e;         /* 障害物のセル: YVT から見えない */
+    --pt-obstacle-seen: #66bb6a;       /* 試しに置く障害物: YVT で検出中 (床の検出マップの「検出される」と同じ色) */
+    --pt-obstacle-unseen: #9e9e9e;     /* 試しに置く障害物: YVT から検出できない */
+    --pt-fov: #ce93d8;                 /* YVT の視野 */
+    --pt-cov-ok: #66bb6a;              /* 床の検出マップ: 検出される */
+    --pt-cov-low: #ff7043;             /* 床の検出マップ: 下方の死角 (低すぎて見えない) */
+    --pt-cov-rear: #7986cb;            /* 床の検出マップ: 後方の死角 (水平視野の外) */
+    --pt-cov-out: #616161;             /* 床の検出マップ: 範囲外 */
     --pt-grid-major: #555555;
     --pt-grid-minor: #333333;
 

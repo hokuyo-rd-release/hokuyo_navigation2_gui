@@ -1490,6 +1490,7 @@
             const processAttribute = (attr, subIndex = null) => {
                 if (typeof attr === 'object' && attr !== null) {
                     for (const key in attr) {
+                        if (key.startsWith('zone_')) continue;  // 障害物検出の個別設定は下の欄で編集する
                         const inputId = `edit-attr-${index}-${key}` + (subIndex !== null ? `-${subIndex}` : '');
                         attributesHtml += `<div class="coord-input">`;
                         attributesHtml += `<label for="${inputId}">${key}:</label>`;
@@ -1518,6 +1519,19 @@
                 attributes.forEach((attr, i) => processAttribute(attr, i));
             } else if (typeof attributes === 'object' && attributes !== null) { // 属性が単一オブジェクトの場合
                 processAttribute(attributes);
+            }
+
+            // 障害物検出の個別設定 (編集は「障害物検出設定」ページ。ここでは件数だけ出す)
+            {
+                const zoneAttr = (Array.isArray(attributes) ? attributes[0] : attributes) || {};
+                const n = countZoneOverrides(zoneAttr);
+                const names = ZONE_FIELDS.filter(f => zoneAttr[`zone_${f.key}`] !== undefined && zoneAttr[`zone_${f.key}`] !== '')
+                    .map(f => `${f.label} ${zoneAttr[`zone_${f.key}`]}`).join(', ');
+                attributesHtml += `<div class="zone-override">
+                    <div class="zone-override__title">障害物検出の個別設定: ${n ? `${n} 件` : 'なし'}</div>
+                    ${n ? `<div class="zone-override__list">${names}</div>` : ''}
+                    <div class="zone-override__note">編集はメイン画面の「障害物検出設定」で行います。</div>
+                </div>`;
             }
 
             infoDiv.innerHTML = basicInfoHtml;
@@ -2307,6 +2321,30 @@
             waypointGuidesDirty = true;
         }
 
+        // ---------------------------------------------------------------------
+        // 障害物検出の範囲のウェイポイント個別設定 (属性の zone_<項目>)
+        //   waypoint_manager は、到着したウェイポイントから次のウェイポイントまでの区間で
+        //   属性 (type) ごとの範囲 (障害物検出設定 = obstacle_monitor.yaml の zone.<属性>.<項目>) に
+        //   ここで書いた値を重ねて obstacle_monitor に送る。
+        //   編集は「障害物検出設定」ページで行う (Map Viewer では件数だけ表示する)。
+        // ---------------------------------------------------------------------
+        const ZONE_FIELDS = [
+            { key: 'stop_distance', label: '検出 前方 [m]', min: 0.2, max: 10 },
+            { key: 'stop_distance_back', label: '検出 後方 [m]', min: 0, max: 3 },
+            { key: 'path_clearance_left', label: '検出 左 [m]', min: 0.05, max: 2 },
+            { key: 'path_clearance_right', label: '検出 右 [m]', min: 0.05, max: 2 },
+            { key: 'min_blocking_cells', label: '停止セル数', min: 1, max: 1000, integer: true },
+            { key: 'deadband_left_ratio', label: '不感帯 左 (割合)', min: 0, max: 1 },
+            { key: 'deadband_right_ratio', label: '不感帯 右 (割合)', min: 0, max: 1 },
+            { key: 'costmap_margin', label: 'costmap 除外 [m]', min: 0, max: 1.5 },
+            { key: 'lookahead', label: '不感帯 前方 [m]', min: 0, max: 20 },
+            { key: 'lookbehind', label: '不感帯 後方 [m]', min: 0, max: 10 },
+        ];
+        function countZoneOverrides(attr) {
+            if (!attr || typeof attr !== 'object') return 0;
+            return ZONE_FIELDS.filter(f => attr[`zone_${f.key}`] !== undefined && attr[`zone_${f.key}`] !== '').length;
+        }
+
         /** ウェイポイントの属性 (3 要素目) を、waypoint_manager と同じ既定値で読む */
         function waypointAttributes(wp) {
             const raw = wp.length > 2 ? (Array.isArray(wp[2]) ? wp[2][0] : wp[2]) : null;
@@ -2320,6 +2358,7 @@
                 value: number(attr.value, 0),
                 xyTolerance: Math.max(0, number(attr.xy_tolerance, WAYPOINT_DEFAULT_XY_TOLERANCE)),
                 yawTolerance: Math.max(0, number(attr.yaw_tolerance, WAYPOINT_DEFAULT_YAW_TOLERANCE)),
+                zoneOverrides: countZoneOverrides(attr),
             };
         }
 
@@ -2442,6 +2481,7 @@
                     lines.push(`到着 ${formatNumber(attr.xyTolerance)} m / `
                         + (yawIgnored ? '向き不問' : `±${formatNumber(THREE.MathUtils.radToDeg(attr.yawTolerance), 0)}°`));
                     lines.push(`向き ${formatNumber(THREE.MathUtils.radToDeg(yaw), 0)}°`);
+                    if (attr.zoneOverrides > 0) lines.push(`障害物検出: 個別設定 ${attr.zoneOverrides} 件`);
                     const label = makeGuideLabel(lines, `waypoint-guide-label--${attr.type}`);
                     // 球や距離ラベルと重ならないよう、円の外側 (向きと反対側) に置く
                     const offset = Math.max(attr.xyTolerance, 0.8) + 0.4;

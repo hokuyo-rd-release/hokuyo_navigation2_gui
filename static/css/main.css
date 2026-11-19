@@ -124,6 +124,9 @@
 .app-shell button[value="map_viewer"] { background-color: var(--color-success); }
 .app-shell button[value="map_viewer"]:hover:not(:disabled) { background-color: var(--color-success-hover); }
 
+.app-shell button#pass_through_config { background-color: var(--color-obstacle); }
+.app-shell button#pass_through_config:hover:not(:disabled) { background-color: var(--color-obstacle-hover); }
+
 /* --- 実行可否の状態（JavaScript が付け外しする） ------------------------- */
 /* チェック未完了などで押せない状態 */
 .app-shell .inactive-button {

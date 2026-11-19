@@ -2686,8 +2686,8 @@ def trigger_script():
         return "Unknown command", 400
 
 # ---------------------------------------------------------------------------
-# 通過モード (pass_through) の設定
-#   obstacle_monitor.yaml の pass_through_* などを、ロボットのモデル上に不感帯・検出帯を
+# 障害物検出設定 (旧: 通過モード設定)
+#   obstacle_monitor.yaml の検出範囲 (属性ごとの zone.<属性>.<項目>) を、ロボットのモデル上に不感帯・検出帯を
 #   描きながら編集する。保存は yaml の値だけを書き換え (コメントは残す)、
 #   必要なら実行中の obstacle_monitor にも ros2 param load で反映する。
 # ---------------------------------------------------------------------------
@@ -2697,8 +2697,9 @@ ROBOT_MESH_DIR = os.path.join(ROBOT_URDF_DIR, 'meshes')
 ROBOT_MESH_EXTENSIONS = {'.stl', '.obj', '.mtl', '.dae', '.png', '.jpg'}
 
 
-def _robot_sensor_origin(link='yvt'):
-    """URDF (wizurg.xacro) から、センサ link の base_link に対する位置を読む。無ければ None。"""
+def _robot_sensor_origin(link='yvt', attr='xyz'):
+    """URDF (wizurg.xacro) から、センサ link の base_link に対する位置 (attr='xyz') または
+    向き (attr='rpy') を読む。無ければ None。"""
     xacro_path = os.path.join(ROBOT_URDF_DIR, 'wizurg.xacro')
     try:
         with open(xacro_path, 'r', encoding='utf-8') as f:
@@ -2707,7 +2708,7 @@ def _robot_sensor_origin(link='yvt'):
         return None
     for joint in re.findall(r'<joint\b.*?</joint>', text, re.DOTALL):
         if re.search(r'<child\s+link="' + re.escape(link) + r'"', joint):
-            m = re.search(r'<origin\s+xyz="([^"]+)"', joint)
+            m = re.search(r'<origin\b[^>]*\b' + attr + r'="([^"]+)"', joint)
             if m:
                 try:
                     return [float(v) for v in m.group(1).split()]
@@ -2738,6 +2739,9 @@ def get_pass_through_config():
             for k, (t, lo, hi, d) in pass_through_config.EDITABLE_PARAMS.items()}
     return jsonify({'status': 'success', 'values': values, 'reference': reference, 'spec': spec,
                     'sensor_origin': _robot_sensor_origin('yvt'),
+                    'sensor_rpy': _robot_sensor_origin('yvt', 'rpy') or [0.0, 0.0, 0.0],
+                    'zone_types': list(pass_through_config.ZONE_TYPES),
+                    'zone_fields': list(pass_through_config.ZONE_FIELDS),
                     'yaml_path': OBSTACLE_MONITOR_YAML})
 
 
@@ -2765,6 +2769,39 @@ def save_pass_through_config():
         ok, output = pass_through_config.apply_live(values)
         result['live'] = {'ok': ok, 'output': output}
     return jsonify(result)
+
+
+@app.route('/api/obstacle_zone/waypoint_files', methods=['GET'])
+def obstacle_zone_waypoint_files():
+    """障害物検出設定: ウェイポイントファイルの一覧"""
+    return jsonify({'status': 'success', 'files': pass_through_config.list_waypoint_files(WP_DIR)})
+
+
+@app.route('/api/obstacle_zone/waypoints/<name>', methods=['GET'])
+def obstacle_zone_waypoints(name):
+    """障害物検出設定: ウェイポイントごとの属性と個別設定 (zone_*)"""
+    try:
+        return jsonify({'status': 'success', 'waypoints': pass_through_config.load_waypoints(WP_DIR, name)})
+    except FileNotFoundError:
+        return jsonify({'status': 'error', 'message': f'waypoints/{name}.json がありません'}), 404
+    except (ValueError, json.JSONDecodeError) as e:
+        return jsonify({'status': 'error', 'message': f'waypoints/{name}.json を読めません: {e}'}), 400
+
+
+@app.route('/api/obstacle_zone/waypoints/<name>', methods=['POST'])
+def save_obstacle_zone_waypoints(name):
+    """障害物検出設定: ウェイポイント個別の設定 (zone_*) だけを書き換える"""
+    body = request.get_json(silent=True) or {}
+    try:
+        changed = pass_through_config.save_zone_overrides(WP_DIR, name, body.get('edits') or {})
+    except FileNotFoundError:
+        return jsonify({'status': 'error', 'message': f'waypoints/{name}.json がありません'}), 404
+    except (ValueError, json.JSONDecodeError) as e:
+        return jsonify({'status': 'error', 'message': str(e)}), 400
+    except OSError as e:
+        return jsonify({'status': 'error', 'message': f'waypoints/{name}.json に書き込めません: {e}'}), 500
+    return jsonify({'status': 'success',
+                    'message': f'waypoints/{name}.json に保存しました (ウェイポイント {changed} 個の個別設定)。'})
 
 
 @app.route('/robot_mesh/<path:filename>')
